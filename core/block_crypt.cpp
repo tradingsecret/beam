@@ -956,9 +956,11 @@ namespace beam
 			0x3c, 0x26, 0xa5, 0x26, 0xd2, 0xe2, 0x20, 0x63,
 		};
 
+		DA.Difficulty0 = Difficulty(22 << Difficulty::s_MantissaBits); // 2^22 = 4mln
+
 		ZeroObject(pForks);
 
-		pForks[1].m_Height = 199403; // not decided yet 
+		pForks[1].m_Height = 321321;
 
 		// future forks
 		for (size_t i = 2; i < _countof(pForks); i++)
@@ -1081,7 +1083,7 @@ namespace beam
 			<< (uint32_t) Block::PoW::K
 			<< (uint32_t) Block::PoW::N
 			<< (uint32_t) Block::PoW::NonceType::nBits
-			<< uint32_t(15) // increment this whenever we change something in the protocol
+			<< uint32_t(14) // increment this whenever we change something in the protocol
 #ifndef BEAM_TESTNET
 			<< "masternet"
 #endif
