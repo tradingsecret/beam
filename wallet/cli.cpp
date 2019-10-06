@@ -92,7 +92,7 @@ namespace beam
         case TxStatus::Pending: return kTxStatusPending;
         case TxStatus::InProgress: return tx.m_sender ? kTxStatusWaitingForReceiver : kTxStatusWaitingForSender;
         case TxStatus::Registering: return tx.m_sender ? kTxStatusSending : kTxStatusReceiving;
-        case TxStatus::Cancelled: return kTxStatusCancelled;
+        case TxStatus::Canceled: return kTxStatusCancelled;
         case TxStatus::Completed:
         {
             if (tx.m_selfTx)
@@ -1594,9 +1594,9 @@ int main_impl(int argc, char* argv[])
                             return -1;
                         }
                         auto walletDB = WalletDB::init(walletPath, pass, walletSeed, reactor, coldWallet);
-                        IPrivateKeyKeeper::Ptr keyKeeper = make_shared<LocalPrivateKeyKeeper>(walletDB);
                         if (walletDB)
                         {
+                            IPrivateKeyKeeper::Ptr keyKeeper = make_shared<LocalPrivateKeyKeeper>(walletDB);
                             LOG_INFO() << kWalletCreatedMessage;
                             CreateNewAddress(vm, walletDB,
                                              keyKeeper, kDefaultAddrLabel);

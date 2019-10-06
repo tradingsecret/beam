@@ -1030,3 +1030,18 @@ void SettingsViewModel::SetDefaultQtumSettingsEL()
     setQtumNodeAddressEL("");
     setQtumSeedEL("");
 }
+
+bool SettingsViewModel::getCanEditBTC() const
+{
+    return AppModel::getInstance().getBitcoinClient()->canModifySettings();
+}
+
+bool SettingsViewModel::getCanEditLTC() const
+{
+    return AppModel::getInstance().getLitecoinClient()->canModifySettings();
+}
+
+bool SettingsViewModel::getCanEditQTUM() const
+{
+    return AppModel::getInstance().getQtumClient()->canModifySettings();
+}

@@ -112,7 +112,7 @@ namespace beam::wallet
 
     BitcoinSide::~BitcoinSide()
     {
-        m_settingsProvider->Release();
+        m_settingsProvider->ReleaseRef();
     }
 
     bool BitcoinSide::Initialize()
@@ -432,10 +432,28 @@ namespace beam::wallet
 
         if (swapTxState == SwapTxState::CreatingTx)
         {
-            // TODO: implement
+            if (!m_SwapLockRawTx.is_initialized())
+            {
+                LOG_ERROR() << m_tx.GetTxID() << "[" << (int)SubTxIndex::LOCK_TX << "]" << " Incorrect state, rebuilding.";
+                m_tx.SetState(SwapTxState::Initial, SubTxIndex::LOCK_TX);
+                m_tx.UpdateAsync();
+                return SwapTxState::Initial;
+            }
+
+            m_bitcoinBridge->signRawTransaction(*m_SwapLockRawTx, [this, weak = this->weak_from_this()](const bitcoin::IBridge::Error& error, const std::string& hexTx, bool complete)
+            {
+                if (!weak.expired())
+                {
+                    OnSignLockTransaction(error, hexTx, complete);
+                }
+            });
         }
 
-        // TODO: check
+        if (swapTxState == SwapTxState::Constructed && !m_SwapLockRawTx.is_initialized())
+        {
+            m_SwapLockRawTx = m_tx.GetMandatoryParameter<std::string>(TxParameterID::AtomicSwapExternalTx, SubTxIndex::LOCK_TX);
+        }
+
         return swapTxState;
     }
 
@@ -524,7 +542,7 @@ namespace beam::wallet
                 if (m_RefundTxConfirmations != confirmations)
                 {
                     LOG_DEBUG() << m_tx.GetTxID() << "[" << static_cast<SubTxID>(SubTxIndex::REFUND_TX) << "] " << confirmations << "/"
-                        << GetTxMinConfirmations() << " confirmations are received.";
+                        << GetTxMinConfirmations() << " confirmations for Refund TX are received.";
                     m_RefundTxConfirmations = confirmations;
                     m_tx.SetParameter(TxParameterID::Confirmations, m_RefundTxConfirmations, true, SubTxIndex::REFUND_TX);
                 }
@@ -545,7 +563,7 @@ namespace beam::wallet
                 if (m_RedeemTxConfirmations != confirmations)
                 {
                     LOG_DEBUG() << m_tx.GetTxID() << "[" << static_cast<SubTxID>(SubTxIndex::REDEEM_TX) << "] " << confirmations << "/"
-                        << GetTxMinConfirmations() << " confirmations are received.";
+                        << GetTxMinConfirmations() << " confirmations for Redeem TX are received.";
                     m_RedeemTxConfirmations = confirmations;
                     m_tx.SetParameter(TxParameterID::Confirmations, m_RedeemTxConfirmations, true, SubTxIndex::REDEEM_TX);
                 }
@@ -662,17 +680,12 @@ namespace beam::wallet
             return;
         }
 
-        // float fee = result["fee"].get<float>();      // calculate fee!
-        uint32_t valuePosition = changePos ? 0 : 1;
-        m_tx.SetParameter(TxParameterID::AtomicSwapExternalTxOutputIndex, valuePosition, false, SubTxIndex::LOCK_TX);
-
-        m_bitcoinBridge->signRawTransaction(hexTx, [this, weak = this->weak_from_this()](const bitcoin::IBridge::Error& error, const std::string& hexTx, bool complete)
+        if (!m_SwapLockRawTx.is_initialized())
         {
-            if (!weak.expired())
-            {
-                OnSignLockTransaction(error, hexTx, complete);
-            }
-        });
+            m_SwapLockRawTx = hexTx;
+            m_LockTxValuePosition = changePos ? 0 : 1;
+            m_tx.UpdateAsync();
+        }
     }
 
     void BitcoinSide::OnSignLockTransaction(const bitcoin::IBridge::Error& error, const std::string& hexTx, bool complete)
@@ -685,6 +698,9 @@ namespace beam::wallet
 
         assert(complete);
         m_SwapLockRawTx = hexTx;
+        // save LockTx to DB
+        m_tx.SetParameter(TxParameterID::AtomicSwapExternalTxOutputIndex, m_LockTxValuePosition, false, SubTxIndex::LOCK_TX);
+        m_tx.SetParameter(TxParameterID::AtomicSwapExternalTx, *m_SwapLockRawTx, false, SubTxIndex::LOCK_TX);
 
         m_tx.SetState(SwapTxState::Constructed, SubTxIndex::LOCK_TX);
         m_tx.UpdateAsync();
@@ -832,7 +848,7 @@ namespace beam::wallet
             if (m_SwapLockTxConfirmations != confirmations)
             {
                 LOG_DEBUG() << m_tx.GetTxID() << "[" << static_cast<SubTxID>(SubTxIndex::LOCK_TX) << "] " << confirmations << "/"
-                    << GetTxMinConfirmations() << " confirmations are received.";
+                    << GetTxMinConfirmations() << " confirmations for Lock TX are received.";
                 m_SwapLockTxConfirmations = confirmations;
                 m_tx.SetParameter(TxParameterID::Confirmations, m_SwapLockTxConfirmations, true, SubTxIndex::LOCK_TX);
             }

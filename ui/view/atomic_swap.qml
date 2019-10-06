@@ -76,7 +76,7 @@ Item {
                     Layout.maximumHeight: 32
                     palette.button: Style.accent_outgoing
                     palette.buttonText: Style.content_opposite
-                    icon.source: "qrc:/assets/icon-receive-blue.svg"
+                    icon.source: "qrc:/assets/icon-accept-offer.svg"
                     //% "Accept offer"
                     text: qsTrId("atomic-swap-accept")
                     font.pixelSize: 12
@@ -96,7 +96,7 @@ Item {
                     Layout.maximumHeight: 32
                     palette.button: Style.accent_incoming
                     palette.buttonText: Style.content_opposite
-                    icon.source: "qrc:/assets/icon-send-blue.svg"
+                    icon.source: "qrc:/assets/icon-create-offer.svg"
                     //% "Create offer"
                     text: qsTrId("atomic-swap-create")
                     font.pixelSize: 12
@@ -128,21 +128,21 @@ Item {
                     }
                     gradLeft: Style.swapCurrencyPaneGrLeftBEAM
                     currencyIcon: "qrc:/assets/icon-beam.svg"
-                    valueStr: viewModel.beamAvailable + " " + Utils.symbolBeam
-                    vatueSecondaryStr: activeTxCountStr()
+                    valueStr: [Utils.formatAmount(viewModel.beamAvailable), Utils.symbolBeam].join(" ")
+                    valueSecondaryStr: activeTxCountStr()
                     visible: true
                 }
 
                 function btcAmount() {
-                    return viewModel.hasBtcTx ? "" : viewModel.btcAvailable + " " + Utils.symbolBtc;
+                    return viewModel.hasBtcTx ? "" : Utils.formatAmount(viewModel.btcAvailable) + " " + Utils.symbolBtc;
                 }
 
                 function ltcAmount() {
-                    return viewModel.hasLtcTx ? "" : viewModel.ltcAvailable + " " + Utils.symbolLtc;
+                    return viewModel.hasLtcTx ? "" : Utils.formatAmount(viewModel.ltcAvailable) + " " + Utils.symbolLtc;
                 }
 
                 function qtumAmount() {
-                    return viewModel.hasQtumTx ? "" : viewModel.qtumAvailable + " " + Utils.symbolQtum;
+                    return viewModel.hasQtumTx ? "" : Utils.formatAmount(viewModel.qtumAvailable) + " " + Utils.symbolQtum;
                 }
 
                 //% "Transaction is in progress"
@@ -164,7 +164,7 @@ Item {
                     gradLeft: Style.swapCurrencyPaneGrLeftBTC
                     currencyIcon: "qrc:/assets/icon-btc.svg"
                     valueStr: parent.btcAmount()
-                    vatueSecondaryStr: parent.btcActiveTxStr()
+                    valueSecondaryStr: parent.btcActiveTxStr()
                     showLoader: viewModel.btcOK && parent.btcActiveTxStr().length
                     isOk: viewModel.btcOK
                     visible: BeamGlobals.haveBtc()
@@ -176,7 +176,7 @@ Item {
                     gradLeft: Style.swapCurrencyPaneGrLeftLTC
                     currencyIcon: "qrc:/assets/icon-ltc.svg"
                     valueStr: parent.ltcAmount()
-                    vatueSecondaryStr: parent.ltcActiveTxStr()
+                    valueSecondaryStr: parent.ltcActiveTxStr()
                     showLoader: viewModel.ltcOK && parent.ltcActiveTxStr().length
                     isOk: viewModel.ltcOK
                     visible: BeamGlobals.haveLtc()
@@ -187,7 +187,7 @@ Item {
                     gradLeft: Style.swapCurrencyPaneGrLeftQTUM
                     currencyIcon: "qrc:/assets/icon-qtum.svg"
                     valueStr: parent.qtumAmount()
-                    vatueSecondaryStr: parent.qtumActiveTxStr()
+                    valueSecondaryStr: parent.qtumActiveTxStr()
                     showLoader: viewModel.qtumOK && parent.qtumActiveTxStr().length
                     isOk: viewModel.qtumOK
                     visible: BeamGlobals.haveQtum()
@@ -247,7 +247,10 @@ Item {
                     Layout.alignment: Qt.AlignTop
                     //% "Transactions"
                     label: qsTrId("atomic-swap-transactions-tab")
-                    onClicked: atomicSwapLayout.state = "transactions"
+                    onClicked: {
+                        atomicSwapLayout.state = "transactions";
+                        transactionsTab.state = "filterAllTransactions"
+                    }
                     capitalization: Font.AllUppercase
                 }
             }
@@ -285,7 +288,7 @@ Item {
                             Layout.alignment: Qt.AlignHCenter | Qt.AlignLeft
                             font.pixelSize: 14
                             color: Style.content_main
-                            opacity: 0.6
+                            // opacity: 0.6
                             //% "Receive BEAM"
                             text: qsTrId("atomic-swap-receive-beam")
                         }
@@ -293,7 +296,7 @@ Item {
                         CustomSwitch {
                             id: sendReceiveBeamSwitch
                             Layout.alignment: Qt.AlignHCenter | Qt.AlignLeft
-                            opacity: 0.6
+                            // opacity: 0.6
                         }
 
                         SFText {
@@ -301,7 +304,7 @@ Item {
                             Layout.leftMargin: 10
                             font.pixelSize: 14
                             color: Style.content_main
-                            opacity: 0.6
+                            // opacity: 0.6
                             //% "Send BEAM"
                             text: qsTrId("atomic-swap-send-beam")
                         }
@@ -341,7 +344,9 @@ Item {
                         CustomComboBox {
                             Layout.alignment: Qt.AlignHCenter | Qt.AlignRight
                             height: 32
-                            Layout.preferredWidth: 65
+                            Layout.minimumWidth: 70
+                            Layout.maximumWidth: 80
+
                             fontPixelSize: 14
                             fontLetterSpacing: 0.47
                             color: Style.content_main
@@ -352,6 +357,35 @@ Item {
                         }
                     }   // RowLayout
 
+                    ColumnLayout {
+                        Layout.minimumWidth: parent.width
+                        Layout.minimumHeight: parent.height
+                        visible: offersTable.model.count == 0
+
+                        SvgImage {
+                            Layout.topMargin: 100
+                            Layout.alignment: Qt.AlignHCenter
+                            source:     "qrc:/assets/atomic-empty-state.svg"
+                            sourceSize: Qt.size(60, 60)
+                        }
+
+                        SFText {
+                            Layout.topMargin:     30
+                            Layout.alignment:     Qt.AlignHCenter
+                            horizontalAlignment:  Text.AlignHCenter
+                            font.pixelSize:       14
+                            color:                Style.content_main
+                            opacity:              0.5
+                            lineHeight:           1.43
+                            //% "There are no active offers at the moment.\nPlease try again later or create an offer yourself."
+                            text:                 qsTrId("atomic-no-offers")
+                        }
+
+                        Item {
+                            Layout.fillHeight: true
+                        }
+                    }
+
                     CustomTableView {
                         id: offersTable
 
@@ -359,6 +393,7 @@ Item {
                         Layout.fillWidth : true
                         Layout.fillHeight : true
                         Layout.topMargin: 14
+                        visible: offersTable.model.count > 0
 
                         property int rowHeight: 56
                         property int columnWidth: (width - swapCoinsColumn.width) / 6
@@ -370,15 +405,16 @@ Item {
                         sortIndicatorColumn: 1
                         sortIndicatorOrder: Qt.DescendingOrder
 
+                        onSortIndicatorColumnChanged: {
+                            sortIndicatorOrder = sortIndicatorColumn == 1 || sortIndicatorColumn == 5
+                                ? Qt.DescendingOrder
+                                : Qt.AscendingOrder;
+                        }
+
                         model: SortFilterProxyModel {
                             id: proxyModel
                             source: SortFilterProxyModel {
                                 source: viewModel.allOffers
-
-                                sortOrder: offersTable.sortIndicatorOrder
-                                sortCaseSensitivity: Qt.CaseInsensitive
-                                sortRole: offersTable.getColumn(offersTable.sortIndicatorColumn).role + "Sort"
-
                                 filterRole: "isBeamSide"
                                 filterString: sendReceiveBeamSwitch.checked ? "false" : "true"
                                 filterSyntax: SortFilterProxyModel.Wildcard
@@ -422,9 +458,9 @@ Item {
                             delegate: Item {
                                 id: coinLabels
                                 width: parent.width
-                                height: transactionsTable.rowHeight
+                                height: offersTable.rowHeight
                                 property var swapCoin: styleData.value
-                                property var isSendBeam: transactionsTable.model.get(styleData.row).isBeamSide
+                                property var isSendBeam: offersTable.model.get(styleData.row).isBeamSide
                                 
                                 anchors.fill: parent
                                 anchors.leftMargin: 20
@@ -466,6 +502,8 @@ Item {
                                 text: styleData.value
                                 elide: Text.ElideRight
                                 fontWeight: Font.Bold
+                                fontStyleName: "Bold"
+                                fontSizeMode: Text.Fit
                             }
                         }
 
@@ -480,6 +518,8 @@ Item {
                                 text: styleData.value
                                 elide: Text.ElideRight
                                 fontWeight: Font.Bold
+                                fontStyleName: "Bold"
+                                fontSizeMode: Text.Fit
                             }
                         }
 
@@ -490,6 +530,9 @@ Item {
                             width: offersTable.columnWidth
                             movable: false
                             resizable: false
+                            delegate: TableItem {
+                                text: Utils.formatAmount(styleData.value)
+                            }
                         }
 
                         TableViewColumn {
@@ -598,7 +641,7 @@ Item {
                         State {
                             name: "filterInProgressTransactions"
                             PropertyChanges { target: inProgressTabSelector; state: "active" }
-                            PropertyChanges { target: txProxyModel; filterString: "pending" } // "in progress" state should be
+                            PropertyChanges { target: txProxyModel; filterString: "true" }
                         }
                     ]
 
@@ -611,7 +654,7 @@ Item {
                         Layout.topMargin: 12
 
                         property int rowHeight: 56
-                        property int columnWidth: (width - txSwapCoinsColumn.width - 40) / 6
+                        property int columnWidth: (width - txSwapCoinsColumn.width - txSwapActionColumn.width) / 6
 
                         frameVisible: false
                         selectionMode: SelectionMode.NoSelection
@@ -619,6 +662,12 @@ Item {
                         sortIndicatorVisible: true
                         sortIndicatorColumn: 1
                         sortIndicatorOrder: Qt.DescendingOrder
+
+                        onSortIndicatorColumnChanged: {
+                            sortIndicatorOrder = sortIndicatorColumn == 1 
+                                ? Qt.DescendingOrder
+                                : Qt.AscendingOrder;
+                        }
 
                         model: SortFilterProxyModel {
                             id: txProxyModel
@@ -628,7 +677,7 @@ Item {
                             sortCaseSensitivity: Qt.CaseInsensitive
                             sortRole: transactionsTable.getColumn(transactionsTable.sortIndicatorColumn).role + "Sort"
 
-                            filterRole: "status"
+                            filterRole: "isInProgress"
                             // filterString: "*"
                             filterSyntax: SortFilterProxyModel.Wildcard
                             filterCaseSensitivity: Qt.CaseInsensitive
@@ -636,7 +685,7 @@ Item {
 
                         rowDelegate: Item {
                             id: rowItem
-                            height: transactionsTable.rowHeight
+                            height: collapsed ? transactionsTable.rowHeight : transactionsTable.rowHeight + txDetails.maximumHeight
                             anchors.left: parent.left
                             anchors.right: parent.right
                             property bool collapsed: true
@@ -674,7 +723,7 @@ Item {
                                         anchors.fill: parent
                                         color: Style.background_details
                                     }
-                                    TransactionDetails {
+                                    SwapTransactionDetails {
                                         id: detailsPanel
                                         width: transactionsTable.width
 
@@ -729,7 +778,7 @@ Item {
                             MouseArea {
                                 anchors.top: parent.top
                                 anchors.left: parent.left
-                                height: rowItem.height
+                                height: transactionsTable.rowHeight
                                 width: parent.width
 
                                 acceptedButtons: Qt.LeftButton | Qt.RightButton
@@ -897,6 +946,8 @@ Item {
                                     TableItem {
                                         text: (styleData.value === '' ? '' : '-') + styleData.value
                                         fontWeight: Font.Bold
+                                        fontStyleName: "Bold"
+                                        fontSizeMode: Text.Fit
                                         color: Style.accent_outgoing
                                         onCopyText: BeamGlobals.copyToClipboard(Utils.getAmountWithoutCurrency(styleData.value)) 
                                     }
@@ -918,6 +969,8 @@ Item {
                                     TableItem {
                                         text: (styleData.value === '' ? '' : '+') + styleData.value
                                         fontWeight: Font.Bold
+                                        fontStyleName: "Bold"
+                                        fontSizeMode: Text.Fit
                                         color: Style.accent_incoming
                                         onCopyText: BeamGlobals.copyToClipboard(Utils.getAmountWithoutCurrency(styleData.value)) 
                                     }
@@ -925,11 +978,11 @@ Item {
                             }
                         }
                         TableViewColumn {
+                            id: txStatusColumn
                             role: "status"
                             //% "Status"
                             title: qsTrId("atomic-swap-tx-table-status")
-                            elideMode: Text.ElideRight
-                            width: transactionsTable.columnWidth
+                            width: transactionsTable.getAdjustedColumnWidth(txStatusColumn)
                             movable: false
                             resizable: false
                             delegate: Item {
@@ -949,44 +1002,44 @@ Item {
                                             sourceSize: Qt.size(20, 20)
                                             source: getIconSource()
                                             function getIconSource() {
-                                                if (transactionsTable.model.get(styleData.row).isSelfTransaction) {
-                                                    return "qrc:/assets/icon-transfer.svg";
-                                                }
-                                                return transactionsTable.model.get(styleData.row).isIncome ?
-                                                    "qrc:/assets/icon-received.svg" :
-                                                    "qrc:/assets/icon-sent.svg";
+                                                var item = transactionsTable.model.get(styleData.row);
+                                                if (item.isInProgress)
+                                                    return "qrc:/assets/icon-swap-in-progress.svg";
+                                                else if (item.isCompleted)
+                                                    return "qrc:/assets/icon-swap-completed.svg";
+                                                else if (item.isExpired)
+                                                    return "qrc:/assets/icon-failed.svg";
+                                                else
+                                                    return "qrc:/assets/icon-swap-failed.svg";
                                             }
                                         }
                                         SFLabel {
                                             Layout.alignment: Qt.AlignLeft
-
+                                            Layout.fillWidth: true
                                             font.pixelSize: 14
                                             font.italic: true
-                                            elide: Text.ElideRight
+                                            wrapMode: Text.WordWrap
                                             text: getStatusText(styleData.value)
+                                            verticalAlignment: Text.AlignBottom
                                             color: getTextColor()
                                             function getTextColor () {
                                                 var item = transactionsTable.model.get(styleData.row);
                                                 if (item.isInProgress || item.isCompleted) {
-                                                    if (item.isSelfTransaction) {
-                                                        return Style.content_main;
-                                                    }
-                                                    return item.isIncome ? Style.accent_incoming : Style.accent_outgoing;
+                                                     return Style.accent_swap;
                                                 }
-                                                else return Style.content_main;
+                                                else {
+                                                    return Style.content_secondary;
+                                                }
                                             }
-                                        }
-                                        Item {
-                                            Layout.fillWidth: true
                                         }
                                     }
                                 }
                             }
                         }
                         TableViewColumn {
-                            id: actionsColumn
+                            id: txSwapActionColumn
                             elideMode: Text.ElideRight
-                            width: transactionsTable.getAdjustedColumnWidth(actionsColumn)
+                            width: 40
                             movable: false
                             resizable: false
                             delegate: txActions
@@ -995,26 +1048,18 @@ Item {
                         Component {
                             id: txActions
                             Item {
-                                Item {
-                                    width: parent.width
-                                    height: transactionsTable.rowHeight
-
-                                    Row{
-                                        anchors.right: parent.right
-                                        anchors.rightMargin: 12
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        spacing: 10
-                                        CustomToolButton {
-                                            icon.source: "qrc:/assets/icon-actions.svg"
-                                            //% "Actions"
-                                            ToolTip.text: qsTrId("general-actions")
-                                            onClicked: {
-                                                txContextMenu.cancelEnabled = transactionsTable.model.get(styleData.row).isCancelAvailable;
-                                                txContextMenu.deleteEnabled = transactionsTable.model.get(styleData.row).isDeleteAvailable;
-                                                txContextMenu.txID = transactionsTable.model.get(styleData.row).rawTxID;
-                                                txContextMenu.popup();
-                                            }
-                                        }
+                                CustomToolButton {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    anchors.right: parent.right
+                                    anchors.rightMargin: 12
+                                    icon.source: "qrc:/assets/icon-actions.svg"
+                                    //% "Actions"
+                                    ToolTip.text: qsTrId("general-actions")
+                                    onClicked: {
+                                        txContextMenu.cancelEnabled = transactionsTable.model.get(styleData.row).isCancelAvailable;
+                                        txContextMenu.deleteEnabled = transactionsTable.model.get(styleData.row).isDeleteAvailable;
+                                        txContextMenu.txID = transactionsTable.model.get(styleData.row).rawTxID;
+                                        txContextMenu.popup();
                                     }
                                 }
                             }
@@ -1110,10 +1155,10 @@ Item {
             case "waiting for sender": return qsTrId("wallet-txs-status-waiting-sender");
             //% "waiting for receiver"
             case "waiting for receiver": return qsTrId("wallet-txs-status-waiting-receiver");
-            //% "receiving"
-            case "receiving": return qsTrId("general-receiving");
-            //% "sending"
-            case "sending": return qsTrId("general-sending");
+            //% "in progress"
+            case "receiving": return qsTrId("wallet-txs-status-in-progress");
+            //% "in progress"
+            case "sending": return qsTrId("wallet-txs-status-in-progress");
             //% "completed"
             case "completed": return qsTrId("wallet-txs-status-completed");
             //% "received"

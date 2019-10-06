@@ -52,6 +52,7 @@ QVariant SwapOffersList::data(const QModelIndex &index, int role) const
     switch (static_cast<Roles>(role))
     {
         case Roles::TimeCreated:
+            return value->timeCreated().toString(Qt::SystemLocaleShortDate);
         case Roles::TimeCreatedSort:
             return value->timeCreated();
 
@@ -59,19 +60,20 @@ QVariant SwapOffersList::data(const QModelIndex &index, int role) const
             return value->amountSend();
 
         case Roles::AmountSendSort:
-            return static_cast<uint>(value->rawAmountSend());
+            return static_cast<qulonglong>(value->rawAmountSend());
 
         case Roles::AmountReceive:
             return value->amountReceive();
 
         case Roles::AmountReceiveSort:
-            return static_cast<uint>(value->rawAmountReceive());
+            return static_cast<qulonglong>(value->rawAmountReceive());
 
         case Roles::Rate:
         case Roles::RateSort:
             return value->rate();
 
         case Roles::Expiration:
+            return value->timeExpiration().toString(Qt::SystemLocaleShortDate);
         case Roles::ExpirationSort:
             return value->timeExpiration();
 

@@ -103,8 +103,18 @@
         <file>assets/icon-settings-active.svg</file>
         <file>assets/icon-settings-blue.svg</file>
         <file>assets/icon-settings-white.svg</file>
+        <file>assets/icon-sending.svg</file>
         <file>assets/icon-sent.svg</file>
+        <file>assets/icon-send-canceled.svg</file>
+        <file>assets/icon-sending-own.svg</file>
+        <file>assets/icon-sent-own.svg</file>
+        <file>assets/icon-receiving.svg</file>
         <file>assets/icon-received.svg</file>
+        <file>assets/icon-receive-canceled.svg</file>
+        <file>assets/icon-failed.svg</file>
+        <file>assets/icon-swap-in-progress.svg</file>
+        <file>assets/icon-swap-completed.svg</file>
+        <file>assets/icon-swap-failed.svg</file>
         <file>assets/icon-comment.svg</file>
         <file>assets/icon-send-grey.svg</file>
         <file>assets/icon-recive-grey.svg</file>
@@ -174,10 +184,14 @@
         <file>assets/icon-proof.svg</file>
         <file>assets/icon-qr.svg</file>
         <file>controls/TransactionDetails.qml</file>
+        <file>controls/SwapTransactionDetails.qml</file>
         <file>controls/PaymentInfoDialog.qml</file>
         <file>assets/icon-copy-blue.svg</file>
         <file>assets/icon-details.svg</file>
         <file>assets/beta-label.svg</file>
+        <file>assets/icon-accept-offer.svg</file>
+        <file>assets/icon-create-offer.svg</file>
+        <file>assets/atomic-empty-state.svg</file>
         <file>controls/OpenExternalLinkConfirmation.qml</file>
         <file>controls/SeedInput.qml</file>
         <file>utils.js</file>

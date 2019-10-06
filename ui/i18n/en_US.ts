@@ -61,12 +61,14 @@
         <translation>Delete</translation>
     </message>
     <message id="general-receiving">
-        <source>receiving</source>
-        <translation>receiving</translation>
+        <source></source>
+        <oldsource>receiving</oldsource>
+        <translation type="unfinished">receiving</translation>
     </message>
     <message id="general-sending">
-        <source>sending</source>
-        <translation>sending</translation>
+        <source></source>
+        <oldsource>sending</oldsource>
+        <translation type="unfinished">sending</translation>
     </message>
     <message id="general-rescan">
         <source>Rescan</source>
@@ -1360,11 +1362,11 @@ or send this address to the sender over secure channel</translation>
     </message>
     <message id="wallet-receive-expires-12">
         <source>12 hours</source>
-        <translation>24 hours {12 ?}</translation>
+        <translation>12 hours</translation>
     </message>
     <message id="wallet-receive-expires-6">
         <source>6 hours</source>
-        <translation>24 hours {6 ?}</translation>
+        <translation>6 hours</translation>
     </message>
     <message id="general-rate">
         <source>Rate</source>
@@ -1641,6 +1643,36 @@ or send this address to the sender over secure channel</translation>
     <message id="wallet-transactions-received-tab">
         <source>Received</source>
         <translation type="unfinished">Received</translation>
+    </message>
+    <message id="settings-progress-na">
+        <source>You cannot change settings\nwhile active transaction is in progress</source>
+        <oldsource>You cannot change settings
+while active transaction is in progress</oldsource>
+        <translation type="unfinished">You cannot change settings
+while active transaction is in progress</translation>
+    </message>
+    <message id="atomic-no-offers">
+        <source>There are no active offers at the moment.\nPlease try again later or create an offer yourself.</source>
+        <oldsource>There are no active offers at the moment.
+Please try again later or create an offer yourself.</oldsource>
+        <translation type="unfinished">There are no active offers at the moment.
+Please try again later or create an offer yourself.</translation>
+    </message>
+    <message id="send-less-than-fee">
+        <source>The swap amount must be greater than the redemption fee.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message id="wallet-txs-status-in-progress">
+        <source>in progress</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message id="wallet-txs-status-own-sent">
+        <source>sent to own address</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message id="wallet-txs-status-own-sending">
+        <source>sending to own address</source>
+        <translation type="unfinished"></translation>
     </message>
 </context>
 </TS>

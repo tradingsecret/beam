@@ -29,13 +29,14 @@ class ReceiveSwapViewModel: public QObject
     Q_PROPERTY(QString  receiverAddress    READ getReceiverAddress                               NOTIFY  receiverAddressChanged)
     Q_PROPERTY(QString  transactionToken   READ getTransactionToken   WRITE  setTransactionToken NOTIFY  transactionTokenChanged)
     Q_PROPERTY(bool     commentValid       READ getCommentValid                                  NOTIFY  commentValidChanged)
+    Q_PROPERTY(bool     isEnough           READ isEnough                                         NOTIFY  enoughChanged)
+    Q_PROPERTY(bool     isGreatThanFee      READ isGreatThanFee                                    NOTIFY  lessThanFeeChanged)
 
     Q_PROPERTY(WalletCurrency::Currency  receiveCurrency    READ getReceiveCurrency    WRITE  setReceiveCurrency  NOTIFY  receiveCurrencyChanged)
     Q_PROPERTY(WalletCurrency::Currency  sentCurrency       READ getSentCurrency       WRITE  setSentCurrency     NOTIFY  sentCurrencyChanged)
 
 public:
     ReceiveSwapViewModel();
-    ~ReceiveSwapViewModel() override;
 
 signals:
     void amountToReceiveChanged();
@@ -50,6 +51,8 @@ signals:
     void transactionTokenChanged();
     void newAddressFailed();
     void commentValidChanged();
+    void enoughChanged();
+    void lessThanFeeChanged();
 
 public:
     Q_INVOKABLE void generateNewAddress();
@@ -88,13 +91,13 @@ private:
     QString getTransactionToken() const;
 
     bool getCommentValid() const;
+    bool isEnough() const;
+    bool isGreatThanFee() const;
 
     void updateTransactionToken();
 
 private slots:
     void onGeneratedNewAddress(const beam::wallet::WalletAddress& walletAddr);
-    void onNewAddressFailed();
-    void onWalletStatus(const beam::wallet::WalletStatus& status);
 
 private:
     double  _amountToReceive;
@@ -109,5 +112,4 @@ private:
     beam::wallet::WalletAddress _receiverAddress;
     WalletModel& _walletModel;
     beam::wallet::TxParameters _txParameters;
-    beam::Height _currentHeight;
 };

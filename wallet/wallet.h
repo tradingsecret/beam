@@ -68,6 +68,11 @@ namespace beam::wallet
         // @param done - number of done tasks
         // @param total - number of total tasks
         virtual void onSyncProgress(int done, int total) = 0;
+    };
+    
+    // Interface for swap bulletin board observer. 
+    struct ISwapOffersObserver
+    {
         virtual void onSwapOffersChanged(ChangeAction action, const std::vector<SwapOffer>& offers) = 0;
     };
 
@@ -88,7 +93,7 @@ namespace beam::wallet
         using Ptr = std::shared_ptr<IWalletMessageEndpoint>;
         virtual void Send(const WalletID& peerID, const SetTxParameter& msg) = 0;
         virtual void SendEncryptedMessage(const WalletID& peerID, const ByteBuffer& msg) = 0;
-        virtual void SendAndSign(const ByteBuffer& msg, const BbsChannel& channel, const WalletID& wid) = 0;
+        virtual void SendAndSign(const ByteBuffer& msg, const BbsChannel& channel, const WalletID& wid, uint8_t version) = 0;
     };
 
     // Extends FlyClient protocol for communication with own or remote node
@@ -121,7 +126,8 @@ namespace beam::wallet
         void Subscribe(IWalletObserver* observer);
         void Unsubscribe(IWalletObserver* observer);
         void ResumeAllTransactions();
-
+    protected:
+        void SendTransactionToNode(const TxID& txId, Transaction::Ptr, SubTxID subTxID);
     private:
         void ProcessTransaction(BaseTransaction::Ptr tx);
         void ResumeTransaction(const TxDescription& tx);
