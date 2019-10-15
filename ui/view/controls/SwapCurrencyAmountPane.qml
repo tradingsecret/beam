@@ -13,11 +13,13 @@ Rectangle {
     property string valueStr: ""
     property string valueSecondaryStr: ""
     property bool isOk: true
+    property bool isConnecting: false
     property int textSize: 16
     property int textSecondarySize: 12
     property color textColor: Style.content_main
     property color textSecondaryColor: Style.content_secondary
     property string textConnectionError: "error"
+    property string textConnecting: "connectring..."
     property bool showLoader: false
     property var onClick: function() {}
 
@@ -80,7 +82,7 @@ Rectangle {
             SFText {
                 anchors.left: parent.left
                 anchors.right: parent.right
-                leftPadding: 20
+                leftPadding: 15
                 rightPadding: 20
                 font.pixelSize: textSize
                 color: textColor
@@ -88,11 +90,12 @@ Rectangle {
                 text: valueStr
                 fontSizeMode: Text.Fit
                 visible: valueStr.length
+                wrapMode: Text.Wrap
             }
             SFText {
                 anchors.left: parent.left
                 anchors.right: parent.right
-                leftPadding: 20
+                leftPadding: 15
                 rightPadding: 20
                 font.pixelSize: textSecondarySize
                 color: textSecondaryColor
@@ -116,7 +119,23 @@ Rectangle {
             elide: Text.ElideRight
             wrapMode: Text.Wrap
             text: textConnectionError
-            visible: !isOk
+            visible: !isOk && !isConnecting
+        }
+
+        SFText {
+            id: connecting
+            anchors.left: currencyLogo.right
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            leftPadding: 10
+            rightPadding: 10
+            font.pixelSize: 12
+            verticalAlignment: Text.AlignVCenter
+            color: textColor
+            elide: Text.ElideRight
+            wrapMode: Text.Wrap
+            text: textConnecting
+            visible: isConnecting
         }
 
         SvgImage {
@@ -126,10 +145,10 @@ Rectangle {
             anchors.verticalCenter: parent.verticalCenter
             anchors.right: parent.right
             anchors.margins: {
-                right: 15
+                right: 10
             }
 
-            source: "qrc:/assets/loading-spinner.svg"            
+            source: "qrc:/assets/loading-spinner.svg"
             rotation: loader.angleValue
             Timer {
                 interval: 200; running: true; repeat: true
@@ -145,7 +164,7 @@ Rectangle {
                 right: 15
             }
             width: childrenRect.width
-            visible: !isOk
+            visible: !isOk && !isConnecting
 
             property int radius: 5
 

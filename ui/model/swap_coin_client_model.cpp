@@ -24,7 +24,7 @@ using namespace beam;
 
 namespace
 {
-    const int kUpdateInterval = 5000;
+    const int kUpdateInterval = 10000;
 }
 
 SwapCoinClientModel::SwapCoinClientModel(beam::bitcoin::IBridgeHolder::Ptr bridgeHolder,
@@ -36,14 +36,18 @@ SwapCoinClientModel::SwapCoinClientModel(beam::bitcoin::IBridgeHolder::Ptr bridg
     qRegisterMetaType<beam::bitcoin::Client::Status>("beam::bitcoin::Client::Status");
     qRegisterMetaType<beam::bitcoin::Client::Balance>("beam::bitcoin::Client::Balance");
 
-    connect(&m_timer, SIGNAL(timeout()), this, SLOT(onTimer()));
+    connect(&m_timer, SIGNAL(timeout()), this, SLOT(requestBalance()));
 
     // connect to myself for save values in UI(main) thread
     connect(this, SIGNAL(gotBalance(const beam::bitcoin::Client::Balance&)), this, SLOT(setBalance(const beam::bitcoin::Client::Balance&)));
     connect(this, SIGNAL(gotStatus(beam::bitcoin::Client::Status)), this, SLOT(setStatus(beam::bitcoin::Client::Status)));
     connect(this, SIGNAL(gotCanModifySettings(bool)), this, SLOT(setCanModifySettings(bool)));
 
+    requestBalance();
+
     m_timer.start(kUpdateInterval);
+
+    GetAsync()->GetStatus();
 }
 
 double SwapCoinClientModel::getAvailable()
@@ -76,7 +80,7 @@ void SwapCoinClientModel::OnCanModifySettingsChanged(bool canModify)
     emit gotCanModifySettings(canModify);
 }
 
-void SwapCoinClientModel::onTimer()
+void SwapCoinClientModel::requestBalance()
 {
     if (GetSettings().IsInitialized())
     {

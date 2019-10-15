@@ -238,7 +238,7 @@ namespace beam::wallet
     {
         if (m_AsyncUpdateCounter == 0)
         {
-            LOG_VERBOSE() << "Async update started!";
+            LOG_DEBUG() << "Async update started!";
         }
         ++m_AsyncUpdateCounter;
     }
@@ -247,7 +247,7 @@ namespace beam::wallet
     {
         if (--m_AsyncUpdateCounter == 0)
         {
-            LOG_VERBOSE() << "Async update finished!";
+            LOG_DEBUG() << "Async update finished!";
             if (m_UpdateCompleted)
             {
                 m_UpdateCompleted();
@@ -1012,7 +1012,7 @@ namespace beam::wallet
         auto completedParameters = it->second->CheckAndCompleteParameters(parameters);
 
         auto newTx = it->second->Create(*this, m_WalletDB, m_KeyKeeper, *parameters.GetTxID());
-        ApplyTransactionParameters(newTx, completedParameters.GetParameters());
+        ApplyTransactionParameters(newTx, completedParameters.Pack());
         return newTx;
     }
 

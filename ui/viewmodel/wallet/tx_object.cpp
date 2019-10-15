@@ -13,6 +13,7 @@
 // limitations under the License.
 #include "tx_object.h"
 #include "viewmodel/ui_helpers.h"
+#include "wallet/common.h"
 
 using namespace beam;
 using namespace beam::wallet;
@@ -44,32 +45,6 @@ auto TxObject::getTxID() const -> beam::wallet::TxID
     return m_tx.m_txId;
 }
 
-auto TxObject::isBeamSideSwap() const -> bool
-{
-    auto isBeamSide = m_tx.GetParameter<bool>(TxParameterID::AtomicSwapIsBeamSide);
-    if (isBeamSide)
-    {
-        return isBeamSide.value();
-    }
-    else return false;    
-}
-
-auto TxObject::getSwapCoinName() const -> QString
-{
-    beam::wallet::AtomicSwapCoin coin;
-    if (m_tx.GetParameter(TxParameterID::AtomicSwapCoin, coin))
-    {
-        switch (coin)
-        {
-            case AtomicSwapCoin::Bitcoin:   return toString(beamui::Currencies::Bitcoin);
-            case AtomicSwapCoin::Litecoin:  return toString(beamui::Currencies::Litecoin);
-            case AtomicSwapCoin::Qtum:      return toString(beamui::Currencies::Qtum);
-            case AtomicSwapCoin::Unknown:   return toString(beamui::Currencies::Unknown);
-        }
-    }
-    return QString("unknown");
-}
-
 bool TxObject::isIncome() const
 {
     return m_tx.m_sender == false;
@@ -88,87 +63,6 @@ QString TxObject::getAmount() const
 
 double TxObject::getAmountValue() const
 {
-    return m_tx.m_amount;
-}
-
-QString TxObject::getSentAmount() const
-{
-    if (m_type == TxType::AtomicSwap)
-    {
-        return getSwapAmount(true);
-    }
-    return m_tx.m_sender ? getAmount() : "";
-}
-
-double TxObject::getSentAmountValue() const
-{
-    if (m_type == TxType::AtomicSwap)
-    {
-        return getSwapAmountValue(true);
-    }
-
-    return m_tx.m_sender ? m_tx.m_amount : 0;
-}
-
-QString TxObject::getReceivedAmount() const
-{
-    if (m_type == TxType::AtomicSwap)
-    {
-        return getSwapAmount(false);
-    }
-    return !m_tx.m_sender ? getAmount() : "";
-}
-
-double TxObject::getReceivedAmountValue() const
-{
-    if (m_type == TxType::AtomicSwap)
-    {
-        return getSwapAmountValue(false);
-    }
-
-    return !m_tx.m_sender ? m_tx.m_amount : 0;
-}
-
-QString TxObject::getSwapAmount(bool sent) const
-{
-    auto isBeamSide = m_tx.GetParameter<bool>(TxParameterID::AtomicSwapIsBeamSide);
-    if (!isBeamSide)
-    {
-        return "";
-    }
-
-    bool s = sent ? !*isBeamSide : *isBeamSide;
-    if (s)
-    {
-        auto swapAmount = m_tx.GetParameter<Amount>(TxParameterID::AtomicSwapAmount);
-        if (swapAmount)
-        {
-            auto swapCoin = m_tx.GetParameter<AtomicSwapCoin>(TxParameterID::AtomicSwapCoin);
-            return AmountToString(*swapAmount, beamui::convertSwapCoinToCurrency(*swapCoin));
-        }
-        return "";
-    }
-    return getAmount();
-}
-
-double TxObject::getSwapAmountValue(bool sent) const
-{
-    auto isBeamSide = m_tx.GetParameter<bool>(TxParameterID::AtomicSwapIsBeamSide);
-    if (!isBeamSide)
-    {
-        return 0.0;
-    }
-
-    bool s = sent ? !*isBeamSide : *isBeamSide;
-    if (s)
-    {
-        auto swapAmount = m_tx.GetParameter<Amount>(TxParameterID::AtomicSwapAmount);
-        if (swapAmount)
-        {
-            return *swapAmount;
-        }
-        return 0.0;
-    }
     return m_tx.m_amount;
 }
 
@@ -335,6 +229,11 @@ bool TxObject::isInProgress() const
         default:
             return false;
     }
+}
+
+bool TxObject::isPending() const
+{
+    return m_tx.m_status == TxStatus::Pending;
 }
 
 bool TxObject::isCompleted() const

@@ -49,7 +49,7 @@ private:
     void OnCanModifySettingsChanged(bool canModify) override;
 
 private slots:
-    void onTimer();
+    void requestBalance();
     void setBalance(const beam::bitcoin::Client::Balance& balance);
     void setStatus(beam::bitcoin::Client::Status status);
     void setCanModifySettings(bool canModify);

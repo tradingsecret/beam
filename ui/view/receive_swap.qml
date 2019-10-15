@@ -10,8 +10,19 @@ import "./utils.js" as Utils
 
 ColumnLayout {
     id: thisView
+
     property var  defaultFocusItem: sentAmountInput.amountInput
     property bool addressSaved: false
+
+    // callbacks set by parent
+    property var    modeSwitchEnabled: true
+    property var    onClosed: undefined
+    property var    onRegularMode: undefined
+
+    TopGradient {
+        mainRoot: main
+        topColor: Style.accent_incoming
+    }
 
     ReceiveSwapViewModel {
         id: viewModel
@@ -39,6 +50,46 @@ ColumnLayout {
         if (viewModel.receiveCurrency == viewModel.sentCurrency) return true;
         if (viewModel.receiveCurrency != Currency.CurrBeam && viewModel.sentCurrency != Currency.CurrBeam) return true;
         return false;
+    }
+
+    Component.onCompleted: {
+        if (!BeamGlobals.canSwap()) swapna.open();
+    }
+
+    SwapNADialog {
+        id: swapna
+        onRejected: thisView.onClosed()
+        onAccepted: main.openSwapSettings()
+        //% "You do not have any 3rd-party currencies connected.\nUpdate your settings and try again."
+        text:       qsTrId("swap-na-message").replace("\\n", "\n")
+    }
+
+    Item {
+        Layout.fillWidth:    true
+        Layout.topMargin:    75
+        Layout.bottomMargin: 50
+
+        SFText {
+            x:                   parent.width / 2 - width / 2
+            font.pixelSize:      18
+            font.styleName:      "Bold"; font.weight: Font.Bold
+            color:               Style.content_main
+            //% "Create swap offer"
+            text:                qsTrId("wallet-receive-swap-title")
+        }
+
+        CustomSwitch {
+            id:         mode
+            //% "Swap"
+            text:       qsTrId("wallet-swap")
+            x:          parent.width - width
+            checked:    true
+            enabled:    modeSwitchEnabled
+            visible:    modeSwitchEnabled
+            onClicked: {
+                if (!checked) onRegularMode();
+            }
+        }
     }
 
     ColumnLayout {
@@ -71,12 +122,9 @@ ColumnLayout {
         ColumnLayout {
             width: parent.width / 2 - parent.columnSpacing / 2
 
-            //
-            // Sent amount
-            //
             AmountInput {
                 Layout.topMargin: 35
-                //% "Sent amount"
+                //% "Send amount"
                 title:            qsTrId("sent-amount-label")
                 id:               sentAmountInput
                 color:            Style.accent_outgoing
@@ -255,29 +303,29 @@ ColumnLayout {
                 text:             qsTrId("general-rate")
             }
 
-            RowLayout
-            {
+            RowLayout {
                 id: rateRow
                 Layout.topMargin: 3
                 Layout.fillWidth: true
 
-                function calcRate () {
-                    if (sentAmountInput.amount == 0) return 0
-                    if (rate.text == "?" || rate.text == "") return 0
-                    return parseFloat(rate.text)
-                }
+                property double maxAmount: 254000000
+                property double minAmount: 0.00000001
 
-                function calcRAmount () {
-                    var rate = calcRate()
-                    if (rate == 0) return 0
-                    var ramount = sentAmountInput.amount / rate
-                    return ramount.toFixed(8).replace(/\.?0+$/,"")
+                function calcReceiveAmount () {
+                    var rate = parseFloat(rateInput.text) || 0
+                    if (rate == 0) return {amount:0, error: false}
+
+                    var ramount = sentAmountInput.amount * maxAmount / rate / maxAmount
+                    var error = ramount > maxAmount || ramount < minAmount
+
+                    if (ramount > maxAmount) ramount = maxAmount
+                    if (ramount < minAmount) ramount = minAmount
+
+                    return {amount: ramount.toFixed(8).replace(/\.?0+$/,""), error: error}
                 }
 
                 function rateValid () {
-                    var ramount = calcRAmount()
-                    var rate = calcRate()
-                    return rate == 0 || (ramount >= 0.00000001 && ramount <= 99999999)
+                    return !calcReceiveAmount().error
                 }
 
                 SFText {
@@ -287,32 +335,28 @@ ColumnLayout {
                 }
 
                 SFTextInput {
-                    id:               rate
+                    id:               rateInput
                     activeFocusOnTab: true
                     font.pixelSize:   14
                     color:            rateRow.rateValid() ? Style.content_main : Style.validator_error
                     backgroundColor:  rateRow.rateValid() ? Style.content_main : Style.validator_error
-                    text:             Utils.calcDisplayRate(receiveAmountInput, sentAmountInput, rate.focus)
+                    text:             Utils.calcDisplayRate(receiveAmountInput, sentAmountInput, rateInput.focus)
                     selectByMouse:    true
                     maximumLength:    30
-                    validator:        RegExpValidator {regExp: /^(([1-9][0-9]{0,7})|(1[0-9]{8})|(2[0-4][0-9]{7})|(25[0-3][0-9]{6})|(0))(\.[0-9]{0,7}[1-9])?$/}
-                    //DoubleValidator {
-                    //                     bottom: 0.00000001;
-                    //                     top: 9999999900000000;
-                    //                     notation: DoubleValidator.StandardNotation
-                    //                  }
+                    validator:        RegExpValidator {regExp: /^(([1-9][0-9]{0,7})|(1[0-9]{8})|(2[0-4][0-9]{7})|(25[0-3][0-9]{6})|(0))(\.[0-9]{0,27}[1-9])?$/}
+
                     onTextEdited: {
                         // unbind
                         text = text
                         // update
                         if (sentAmountInput.amount == 0) sentAmountInput.amount = 1
-                        receiveAmountInput.amount = rateRow.calcRAmount()
+                        receiveAmountInput.amount = rateRow.calcReceiveAmount().amount
                     }
 
                     onFocusChanged: {
                         if (!focus) {
                             text = Qt.binding(function() {
-                                    return Utils.calcDisplayRate(receiveAmountInput, sentAmountInput, rate.focus)
+                                    return Utils.calcDisplayRate(receiveAmountInput, sentAmountInput, rateInput.focus)
                                 })
                         }
                     }
@@ -322,6 +366,19 @@ ColumnLayout {
                     font.pixelSize:  14
                     color:           rateRow.rateValid() ? Style.content_secondary : Style.validator_error
                     text:            sentAmountInput.currencyLabel
+                }
+            }
+
+            Item {
+                Layout.leftMargin: rateInput.x
+                SFText {
+                    color:               Style.validator_error
+                    font.pixelSize:      12
+                    font.styleName:      "Italic"
+                    width:               parent.width
+                    //% "Invalid rate"
+                    text:                qsTrId("swap-invalid-rate")
+                    visible:             !rateRow.rateValid()
                 }
             }
         }
@@ -372,7 +429,7 @@ ColumnLayout {
             palette.buttonText: Style.content_main
             icon.source: "qrc:/assets/icon-cancel-white.svg"
             onClicked: {
-                thisView.parent.parent.pop();
+                onClosed();
             }
         }
 
@@ -409,7 +466,7 @@ ColumnLayout {
                 }
                 viewModel.startListen()
                 viewModel.publishToken()
-                thisView.parent.parent.pop();
+                onClosed();
             }
         }
     }

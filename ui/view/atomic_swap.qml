@@ -21,12 +21,32 @@ Item {
         //% "Atomic Swap is in BETA"
         title: qsTrId("swap-beta-title")
         //% "I understand"
-        okButtonText:        qsTrId("swap-beta-button")
+        okButtonText:        qsTrId("swap-alert-confirm-button")
         okButtonIconSource:  "qrc:/assets/icon-done.svg"
         cancelButtonVisible: false
         width: 470
         //% "Atomic Swap functionality is Beta at the moment. We recommend you not to send large amounts."
         text: qsTrId("swap-beta-message")
+    }
+
+    ConfirmationDialog {
+        id:                     cancelOfferDialog
+        property var txId: undefined
+        width:                  460
+        //% "Cancel offer"
+        title:                  qsTrId("atomic-swap-cancel")
+        //% "Are you sure you want to cancel your offer?"
+        text:                   qsTrId("atomic-swap-cancel-text")
+        //% "cancel offer"
+        okButtonText:           qsTrId("atomic-swap-cancel-button")
+        okButtonIconSource:     "qrc:/assets/icon-cancel-black.svg"
+        okButtonColor:          Style.swapCurrencyStateIndicator
+        //% "back"
+        cancelButtonText:       qsTrId("atomic-swap-back-button")
+        cancelButtonIconSource: "qrc:/assets/icon-back.svg"
+        onAccepted: {
+            viewModel.cancelTx(cancelOfferDialog.txId);
+        }
     }
 
     Component.onCompleted: {
@@ -64,6 +84,37 @@ Item {
             spacing: 0
             state: "offers"
 
+            // callbacks for send views
+            function onAccepted() {
+                            offersStackView.pop();
+                            atomicSwapLayout.state = "transactions";
+                            transactionsTab.state = "filterInProgressTransactions";
+            }
+            function onClosed() {
+                offersStackView.pop();
+            }
+            function onSwapToken(token) {
+                offersStackView.pop();
+                offersStackView.push(Qt.createComponent("send_swap.qml"),
+                                    {"onAccepted": onAccepted,
+                                        "onClosed": onClosed});
+                offersStackView.currentItem.setToken(token);
+            }
+            function onAddress() {
+                onlySwapTokenAlert.open();
+            }
+            ConfirmationDialog {
+                id:                     onlySwapTokenAlert
+                //% "Only swap token is allowed to use here."
+                title:                  qsTrId("only-swap-token-allowed-allert-head")
+                //% "You have provided a wallet address.\nPlease fill in swap token and try again."
+                text:                   qsTrId("only-swap-token-allowed-allert-body")
+                //% "I understand"
+                okButtonText:           qsTrId("swap-alert-confirm-button")
+                okButtonIconSource:     "qrc:/assets/icon-done.svg"
+                cancelButtonVisible:    false
+            }
+
             RowLayout {
                 Layout.alignment: Qt.AlignRight | Qt.AlignTop
                 Layout.topMargin: 33
@@ -83,9 +134,11 @@ Item {
                     //font.capitalization: Font.AllUppercase
 
                     onClicked: {
-                        offersStackView.push(Qt.createComponent("send.qml"));
-                        atomicSwapLayout.state = "transactions";
-                        transactionsTab.state = "filterInProgressTransactions";
+                        offersStackView.push(Qt.createComponent("send.qml"),
+                                            {"isSwapMode": true,
+                                             "onClosed": onClosed,
+                                             "onSwapToken": onSwapToken,
+                                             "onAddress": onAddress});
                     }
                 }
                 
@@ -103,7 +156,10 @@ Item {
                     //font.capitalization: Font.AllUppercase
 
                     onClicked: {
-                        offersStackView.push(Qt.createComponent("receive.qml"), {"isSwapMode": true});
+                        offersStackView.push(Qt.createComponent("receive_swap.qml"),
+                                            {"modeSwitchEnabled": false,
+                                             "onClosed": onClosed});
+                        function onClosed() { offersStackView.pop(); }
                     }
                 }
             }
@@ -128,21 +184,21 @@ Item {
                     }
                     gradLeft: Style.swapCurrencyPaneGrLeftBEAM
                     currencyIcon: "qrc:/assets/icon-beam.svg"
-                    valueStr: [Utils.formatAmount(viewModel.beamAvailable), Utils.symbolBeam].join(" ")
+                    valueStr: [Utils.formatAmount(viewModel.beamAvailable, false, true), Utils.symbolBeam].join(" ")
                     valueSecondaryStr: activeTxCountStr()
                     visible: true
                 }
 
                 function btcAmount() {
-                    return viewModel.hasBtcTx ? "" : Utils.formatAmount(viewModel.btcAvailable) + " " + Utils.symbolBtc;
+                    return viewModel.hasBtcTx ? "" : Utils.formatAmount(viewModel.btcAvailable, false, true) + " " + Utils.symbolBtc;
                 }
 
                 function ltcAmount() {
-                    return viewModel.hasLtcTx ? "" : Utils.formatAmount(viewModel.ltcAvailable) + " " + Utils.symbolLtc;
+                    return viewModel.hasLtcTx ? "" : Utils.formatAmount(viewModel.ltcAvailable, false, true) + " " + Utils.symbolLtc;
                 }
 
                 function qtumAmount() {
-                    return viewModel.hasQtumTx ? "" : Utils.formatAmount(viewModel.qtumAvailable) + " " + Utils.symbolQtum;
+                    return viewModel.hasQtumTx ? "" : Utils.formatAmount(viewModel.qtumAvailable, false, true) + " " + Utils.symbolQtum;
                 }
 
                 //% "Transaction is in progress"
@@ -167,7 +223,10 @@ Item {
                     valueSecondaryStr: parent.btcActiveTxStr()
                     showLoader: viewModel.btcOK && parent.btcActiveTxStr().length
                     isOk: viewModel.btcOK
+                    isConnecting: viewModel.btcConnecting
                     visible: BeamGlobals.haveBtc()
+                    //% "Connecting..."
+                    textConnecting: qsTrId("swap-connecting")
                     //% "Cannot connect to peer. Please check in the address in settings and retry."
                     textConnectionError: qsTrId("swap-beta-connection-error")
                 }
@@ -179,7 +238,9 @@ Item {
                     valueSecondaryStr: parent.ltcActiveTxStr()
                     showLoader: viewModel.ltcOK && parent.ltcActiveTxStr().length
                     isOk: viewModel.ltcOK
+                    isConnecting: viewModel.ltcConnecting
                     visible: BeamGlobals.haveLtc()
+                    textConnecting: qsTrId("swap-connecting")
                     textConnectionError: qsTrId("swap-beta-connection-error")
                 }
 
@@ -190,7 +251,9 @@ Item {
                     valueSecondaryStr: parent.qtumActiveTxStr()
                     showLoader: viewModel.qtumOK && parent.qtumActiveTxStr().length
                     isOk: viewModel.qtumOK
+                    isConnecting: viewModel.qtumConnecting
                     visible: BeamGlobals.haveQtum()
+                    textConnecting: qsTrId("swap-connecting")
                     textConnectionError: qsTrId("swap-beta-connection-error")
                 }
 
@@ -460,7 +523,7 @@ Item {
                                 width: parent.width
                                 height: offersTable.rowHeight
                                 property var swapCoin: styleData.value
-                                property var isSendBeam: offersTable.model.get(styleData.row).isBeamSide
+                                property var isSendBeam: offersTable.model.getRoleValue(styleData.row, "isBeamSide")
                                 
                                 anchors.fill: parent
                                 anchors.leftMargin: 20
@@ -531,7 +594,7 @@ Item {
                             movable: false
                             resizable: false
                             delegate: TableItem {
-                                text: Utils.formatAmount(styleData.value)
+                                text: Utils.formatAmount(styleData.value, false, true)
                             }
                         }
 
@@ -555,7 +618,7 @@ Item {
                                 Item {
                                     Layout.fillWidth : true
                                     Layout.fillHeight : true
-                                    property var isOwnOffer: offersTable.model.get(styleData.row).isOwnOffer
+                                    property var isOwnOffer: offersTable.model.getRoleValue(styleData.row, "isOwnOffer")
 
                                     SFText {
                                         anchors.right: parent.right
@@ -563,8 +626,7 @@ Item {
                                         anchors.rightMargin: 20
 
                                         font.pixelSize: 14
-                                        color: isOwnOffer ? Style.content_main : Style.active
-                                        opacity: isOwnOffer ? 0.5 : 1.0
+                                        color: isOwnOffer ? Style.swapCurrencyStateIndicator : Style.active
                                         text: isOwnOffer
                                                         //% "Cancel offer"
                                                         ? qsTrId("atomic-swap-cancel")
@@ -576,12 +638,15 @@ Item {
                                             acceptedButtons: Qt.LeftButton
                                             onClicked: {
                                                 if (isOwnOffer) {
-                                                    var txID = offersTable.model.get(styleData.row).rawTxID
-                                                    viewModel.cancelTx(txID);
+                                                    cancelOfferDialog.txId = offersTable.model.getRoleValue(styleData.row, "rawTxID");
+                                                    cancelOfferDialog.open();
                                                 }
                                                 else {
-                                                    var txParameters = offersTable.model.get(styleData.row).rawTxParameters;
-                                                    offersStackView.push(Qt.createComponent("send.qml"), {"isSwapMode": true, "predefinedTxParams": txParameters});
+                                                    var txParameters = offersTable.model.getRoleValue(styleData.row, "rawTxParameters");
+                                                    offersStackView.push(Qt.createComponent("send_swap.qml"),
+                                                                        {"predefinedTxParams": txParameters,
+                                                                         "onAccepted": onAccepted,
+                                                                         "onClosed": onClosed});
                                                 }
                                             }
                                         }
@@ -685,10 +750,17 @@ Item {
 
                         rowDelegate: Item {
                             id: rowItem
-                            height: collapsed ? transactionsTable.rowHeight : transactionsTable.rowHeight + txDetails.maximumHeight
+                            height: ctransactionsTable.rowHeight
                             anchors.left: parent.left
                             anchors.right: parent.right
                             property bool collapsed: true
+
+                            property var myModel: parent.model
+
+                            onMyModelChanged: {
+                                collapsed = true;
+                                height = Qt.binding(function(){ return transactionsTable.rowHeight;});
+                            }
 
                             Rectangle {
                                 anchors.fill: parent                        
@@ -710,14 +782,7 @@ Item {
                                     width: parent.width
                                     clip: true
 
-                                    property int maximumHeight: detailsPanel.height
-
-                                    onMaximumHeightChanged: {
-                                        if (!rowItem.collapsed) {
-                                            rowItem.height = maximumHeight + rowItem.height
-                                            txDetails.height = maximumHeight
-                                        }
-                                    }
+                                    property int maximumHeight: detailsPanel.implicitHeight
 
                                     Rectangle {
                                         anchors.fill: parent
@@ -727,49 +792,22 @@ Item {
                                         id: detailsPanel
                                         width: transactionsTable.width
 
-                                        property var txRolesMap: transactionsTable.model.get(styleData.row)
-                                        sendAddress:        txRolesMap.addressTo ? txRolesMap.addressTo : ""
-                                        receiveAddress:     txRolesMap.addressFrom ? txRolesMap.addressFrom : ""
-                                        fee:                txRolesMap.fee ? txRolesMap.fee : ""
-                                        comment:            txRolesMap.comment ? txRolesMap.comment : ""
-                                        txID:               txRolesMap.txID ? txRolesMap.txID : ""
-                                        kernelID:           txRolesMap.kernelID ? txRolesMap.kernelID : ""
-                                        status:             txRolesMap.status ? txRolesMap.status : ""
-                                        failureReason:      txRolesMap.failureReason ? txRolesMap.failureReason : ""
-                                        isIncome:           txRolesMap.isIncome ? txRolesMap.isIncome : false
-                                        hasPaymentProof:    txRolesMap.hasPaymentProof ? txRolesMap.hasPaymentProof : false
-                                        isSelfTx:           txRolesMap.isSelfTransaction ? txRolesMap.isSelfTransaction : false
-                                        rawTxID:            txRolesMap.rawTxID ? txRolesMap.rawTxID : null
+                                        property var txRolesMap: myModel
+                                        swapCoinName:                   txRolesMap && txRolesMap.swapCoin ? txRolesMap.swapCoin : ""
+                                        isBeamSide:                     txRolesMap && txRolesMap.isBeamSideSwap ? txRolesMap.isBeamSideSwap : false
+                                        isProofReceived:                txRolesMap && txRolesMap.isProofReceived ? txRolesMap.isProofReceived : false
+                                        swapCoinLockTxId:               txRolesMap && txRolesMap.swapCoinLockTxId ? txRolesMap.swapCoinLockTxId : ""
+                                        swapCoinLockTxConfirmations:    txRolesMap && txRolesMap.swapCoinLockTxConfirmations ? txRolesMap.swapCoinLockTxConfirmations : ""
+                                        swapCoinRedeemTxId:             txRolesMap && txRolesMap.swapCoinRedeemTxId ? txRolesMap.swapCoinRedeemTxId : ""
+                                        swapCoinRedeemTxConfirmations:  txRolesMap && txRolesMap.swapCoinRedeemTxConfirmations ? txRolesMap.swapCoinRedeemTxConfirmations : ""
+                                        swapCoinRefundTxId:             txRolesMap && txRolesMap.swapCoinRefundTxId ? txRolesMap.swapCoinRefundTxId : ""
+                                        swapCoinRefundTxConfirmations:  txRolesMap && txRolesMap.swapCoinRefundTxConfirmations ? txRolesMap.swapCoinRefundTxConfirmations : ""
+                                        beamLockTxKernelId:             txRolesMap && txRolesMap.beamLockTxKernelId ? txRolesMap.beamLockTxKernelId : ""
+                                        beamRedeemTxKernelId:           txRolesMap && txRolesMap.beamRedeemTxKernelId ? txRolesMap.beamRedeemTxKernelId : ""
+                                        beamRefundTxKernelId:           txRolesMap && txRolesMap.beamRefundTxKernelId ? txRolesMap.beamRefundTxKernelId : ""
                                         
-                                        onOpenExternal : function() {
-                                            var url = Style.explorerUrl + "block?kernel_id=" + detailsPanel.kernelID;
-                                            Utils.openExternal(url, viewModel, externalLinkConfirmation);
-                                        } 
                                         onTextCopied: function (text) {
                                             BeamGlobals.copyToClipboard(text);
-                                        }
-                                        onCopyPaymentProof: function() {
-                                            if (detailsPanel.rawTxID)
-                                            {
-                                                var paymentInfo = viewModel.getPaymentInfo(detailsPanel.rawTxID);
-                                                if (paymentInfo.paymentProof.length == 0)
-                                                {
-                                                    paymentInfo.paymentProofChanged.connect(function() {
-                                                        textCopied(paymentInfo.paymentProof);
-                                                    });
-                                                }
-                                                else
-                                                {
-                                                    textCopied(paymentInfo.paymentProof);
-                                                }
-                                            }
-                                        }
-                                        onShowPaymentProof: {
-                                            if (detailsPanel.rawTxID)
-                                            {
-                                                paymentInfoDialog.model = viewModel.getPaymentInfo(detailsPanel.rawTxID);
-                                                paymentInfoDialog.open();
-                                            }
                                         }
                                     }
                                 }
@@ -791,10 +829,7 @@ Item {
                                     }
                                     if (mouse.button === Qt.RightButton )
                                     {
-                                        txContextMenu.cancelEnabled = transactionsTable.model.get(styleData.row).isCancelAvailable;
-                                        txContextMenu.deleteEnabled = transactionsTable.model.get(styleData.row).isDeleteAvailable;
-                                        txContextMenu.txID = transactionsTable.model.get(styleData.row).rawTxID;
-                                        txContextMenu.popup();
+                                        transactionsTable.showContextMenu(styleData.row);
                                     }
                                     else if (mouse.button === Qt.LeftButton)
                                     {
@@ -821,7 +856,7 @@ Item {
                                     target: rowItem
                                     easing.type: Easing.Linear
                                     property: "height"
-                                    to: rowItem.height + txDetails.maximumHeight
+                                    to: transactionsTable.rowHeight + txDetails.maximumHeight
                                     duration: expand.expandDuration
                                 }
 
@@ -882,7 +917,7 @@ Item {
                                 width: parent.width
                                 height: transactionsTable.rowHeight
                                 property var swapCoin: styleData.value
-                                property var isSendBeam: transactionsTable.model.get(styleData.row).isBeamSideSwap
+                                property var isSendBeam: transactionsTable.model.getRoleValue(styleData.row, "isBeamSideSwap")
                                 
                                 anchors.fill: parent
                                 anchors.leftMargin: 20
@@ -991,23 +1026,28 @@ Item {
                                     height: transactionsTable.rowHeight
 
                                     RowLayout {
+                                        id: statusRow
                                         Layout.alignment: Qt.AlignLeft
                                         anchors.fill: parent
                                         anchors.leftMargin: 10
                                         spacing: 10
 
+                                        property var isInProgress: transactionsTable.model.getRoleValue(styleData.row, "isInProgress")
+                                        property var isCompleted: transactionsTable.model.getRoleValue(styleData.row, "isCompleted")
+                                        property var isExpired: transactionsTable.model.getRoleValue(styleData.row, "isExpired")
+
                                         SvgImage {
+                                            id: statusIcon
                                             Layout.alignment: Qt.AlignLeft
 
                                             sourceSize: Qt.size(20, 20)
                                             source: getIconSource()
                                             function getIconSource() {
-                                                var item = transactionsTable.model.get(styleData.row);
-                                                if (item.isInProgress)
+                                                if (statusRow.isInProgress)
                                                     return "qrc:/assets/icon-swap-in-progress.svg";
-                                                else if (item.isCompleted)
+                                                else if (statusRow.isCompleted)
                                                     return "qrc:/assets/icon-swap-completed.svg";
-                                                else if (item.isExpired)
+                                                else if (statusRow.isExpired)
                                                     return "qrc:/assets/icon-failed.svg";
                                                 else
                                                     return "qrc:/assets/icon-swap-failed.svg";
@@ -1023,13 +1063,16 @@ Item {
                                             verticalAlignment: Text.AlignBottom
                                             color: getTextColor()
                                             function getTextColor () {
-                                                var item = transactionsTable.model.get(styleData.row);
-                                                if (item.isInProgress || item.isCompleted) {
+                                                if (statusRow.isInProgress || statusRow.isCompleted) {
                                                      return Style.accent_swap;
                                                 }
                                                 else {
                                                     return Style.content_secondary;
                                                 }
+                                            }
+                                            onTextChanged: {
+                                                color = getTextColor();
+                                                statusIcon.source = statusIcon.getIconSource();
                                             }
                                         }
                                     }
@@ -1045,21 +1088,31 @@ Item {
                             delegate: txActions
                         }
 
+                        function showContextMenu(row) {
+                            txContextMenu.canCopyToken = true;
+                            txContextMenu.token = transactionsTable.model.getRoleValue(row, "token");
+                            txContextMenu.cancelEnabled = transactionsTable.model.getRoleValue(row, "isCancelAvailable");
+                            txContextMenu.deleteEnabled = transactionsTable.model.getRoleValue(row, "isDeleteAvailable");
+                            txContextMenu.txID = transactionsTable.model.getRoleValue(row, "rawTxID");
+                            txContextMenu.popup();
+                        }
+
                         Component {
                             id: txActions
                             Item {
-                                CustomToolButton {
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    anchors.right: parent.right
-                                    anchors.rightMargin: 12
-                                    icon.source: "qrc:/assets/icon-actions.svg"
-                                    //% "Actions"
-                                    ToolTip.text: qsTrId("general-actions")
-                                    onClicked: {
-                                        txContextMenu.cancelEnabled = transactionsTable.model.get(styleData.row).isCancelAvailable;
-                                        txContextMenu.deleteEnabled = transactionsTable.model.get(styleData.row).isDeleteAvailable;
-                                        txContextMenu.txID = transactionsTable.model.get(styleData.row).rawTxID;
-                                        txContextMenu.popup();
+                                Item {
+                                    width: parent.width
+                                    height: transactionsTable.rowHeight
+                                    CustomToolButton {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        anchors.right: parent.right
+                                        anchors.rightMargin: 12
+                                        icon.source: "qrc:/assets/icon-actions.svg"
+                                        //% "Actions"
+                                        ToolTip.text: qsTrId("general-actions")
+                                        onClicked: {
+                                            transactionsTable.showContextMenu(styleData.row);
+                                        }
                                     }
                                 }
                             }
@@ -1070,9 +1123,21 @@ Item {
                         id: txContextMenu
                         modal: true
                         dim: false
+                        property bool canCopyToken
                         property bool cancelEnabled
                         property bool deleteEnabled
                         property var txID
+                        property string token
+
+                        Action {
+                            //% "Copy token"
+                            text: qsTrId("swap-copy-token")
+                            icon.source: "qrc:/assets/icon-copy.svg"
+                            enabled: txContextMenu.canCopyToken
+                            onTriggered: {
+                                BeamGlobals.copyToClipboard(txContextMenu.token);
+                            }
+                        }
 
                         Action {
                             //% "Cancel"
@@ -1137,7 +1202,7 @@ Item {
             }
         }
     }
-    
+
     function getCoinIcon(coin) {
         switch(coin) {
             case "btc": return "qrc:/assets/icon-btc.svg";

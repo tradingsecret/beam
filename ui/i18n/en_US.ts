@@ -62,12 +62,10 @@
     </message>
     <message id="general-receiving">
         <source></source>
-        <oldsource>receiving</oldsource>
         <translation type="unfinished">receiving</translation>
     </message>
     <message id="general-sending">
         <source></source>
-        <oldsource>sending</oldsource>
         <translation type="unfinished">sending</translation>
     </message>
     <message id="general-rescan">
@@ -186,7 +184,6 @@
     </message>
     <message id="general-addr-comment-error">
         <source>Address with the same comment already exists</source>
-        <oldsource>Address with same comment already exist</oldsource>
         <translation>Address with same comment already exist</translation>
     </message>
     <message id="wallet-receive-button">
@@ -574,17 +571,14 @@
     </message>
     <message id="wallet-receive-title">
         <source>Receive</source>
-        <oldsource>Receive Beam</oldsource>
         <translation>Receive Beam</translation>
     </message>
     <message id="wallet-receive-my-addr-label">
         <source>My address (auto-generated)</source>
-        <oldsource>My address</oldsource>
         <translation>My address</translation>
     </message>
     <message id="wallet-receive-expires-label">
         <source>Expires in</source>
-        <oldsource>Expires</oldsource>
         <translation>Expires</translation>
     </message>
     <message id="wallet-receive-expires-24">
@@ -609,17 +603,14 @@
     </message>
     <message id="send-title">
         <source>Send</source>
-        <oldsource>Send Beam</oldsource>
         <translation>Send Beam</translation>
     </message>
     <message id="send-send-to-label">
         <source>Transaction token or contact</source>
-        <oldsource>Send To</oldsource>
         <translation>Send To</translation>
     </message>
     <message id="send-contact-placeholder">
         <source>Please specify contact or transaction token</source>
-        <oldsource>Please specify contact</oldsource>
         <translation>Please specify contact</translation>
     </message>
     <message id="send-amount-label">
@@ -1300,9 +1291,8 @@ or send this address to the sender over secure channel</translation>
         <translation>Swap</translation>
     </message>
     <message id="settings-reset">
-        <source>Switch off</source>
-        <oldsource>Clear</oldsource>
-        <translation type="unfinished">Clear</translation>
+        <source>Disconnect</source>
+        <translation>Disconnect</translation>
     </message>
     <message id="settings-node-address">
         <source>Node Address</source>
@@ -1328,10 +1318,6 @@ or send this address to the sender over secure channel</translation>
         <source>Atomic Swap is in BETA</source>
         <translation>Atomic Swap is in BETA</translation>
     </message>
-    <message id="swap-beta-button">
-        <source>I understand</source>
-        <translation>I understand</translation>
-    </message>
     <message id="swap-na-message">
         <source>You do not have any 3rd-party currencies connected.\nUpdate your settings and try again.</source>
         <translation>You do not have any 3rd-party currencies connected.\nUpdate your settings and try again.</translation>
@@ -1353,8 +1339,8 @@ or send this address to the sender over secure channel</translation>
         <translation>Receive amount</translation>
     </message>
     <message id="sent-amount-label">
-        <source>Sent amount</source>
-        <translation>Sent amount</translation>
+        <source>Send amount</source>
+        <translation>Send amount</translation>
     </message>
     <message id="wallet-receive-offer-expires-label">
         <source>Offer expiration time</source>
@@ -1608,22 +1594,6 @@ or send this address to the sender over secure channel</translation>
         <source>There is no Trezor device connected. Please, connect and try again.</source>
         <translation>There is no Trezor device connected. Please, connect and try again.</translation>
     </message>
-    <message id="swap-beta-connection-error">
-        <source>Cannot connect to peer. Please check in the address in settings and retry.</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message id="atomic-swap-active-tx-count">
-        <source>%1 active transactions</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message id="atomic-swap-1active-tx-count">
-        <source>1 active transaction</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message id="swap-beta-tx-in-progress">
-        <source>Transaction is in progress</source>
-        <translation type="unfinished"></translation>
-    </message>
     <message id="settings-invalid-seed">
         <source>Invalid seed phrase</source>
         <translation>Invalid seed phrase</translation>
@@ -1673,6 +1643,120 @@ Please try again later or create an offer yourself.</translation>
     <message id="wallet-txs-status-own-sending">
         <source>sending to own address</source>
         <translation type="unfinished"></translation>
+    </message>
+    <message id="wallet-search-transactions-placeholder">
+        <source>Transaction or kernel ID, comment, address or contact</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message id="settings-swap-node">
+        <source>Node</source>
+        <translation>Node</translation>
+    </message>
+    <message id="wallet-clear-search">
+        <source>Clear search</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message id="wallet-search">
+        <source>Search</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message id="atomic-swap-1active-tx-count">
+        <source>1 active transaction</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message id="atomic-swap-active-tx-count">
+        <source>%1 active transactions</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message id="swap-beta-tx-in-progress">
+        <source>Transaction is in progress</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message id="swap-connecting">
+        <source>Connecting...</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message id="swap-beta-connection-error">
+        <source>Cannot connect to peer. Please check in the address in settings and retry.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message id="swap-alert-confirm-button">
+        <source>I understand</source>
+        <translation type="unfinished">I understand</translation>
+    </message>
+    <message id="only-swap-token-allowed-allert-head">
+        <source>Only swap token is allowed to use here.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message id="only-swap-token-allowed-allert-body">
+        <source>You have provided a wallet address.\nPlease fill in swap token and try again.</source>
+        <translation type="unfinished">You have provided a wallet address.
+Please fill in swap token and try again.</translation>
+    </message>
+    <message id="accept-own-offer-allert-head">
+        <source>Own offer can’t be accepted</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message id="accept-own-offer-allert-body">
+        <source>The transaction token was generated by you, therefore it is not allowed to accept your own offer.\nPlease check the swap token and try again.</source>
+        <translation type="unfinished">The transaction token was generated by you, therefore it is not allowed to accept your own offer.
+Please check the swap token and try again.</translation>
+    </message>
+    <message id="swap-copy-token">
+        <source>Copy token</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message id="atomic-swap-cancel-text">
+        <source>Are you sure you want to cancel your offer?</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message id="atomic-swap-cancel-button">
+        <source>cancel offer</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message id="atomic-swap-back-button">
+        <source>back</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message id="swap-details-lock-tx-id">
+        <source>lock transaction ID</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message id="swap-details-lock-tx-conf">
+        <source>lock transaction confirmations</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message id="swap-details-beam-lock-kernel-id">
+        <source>BEAM lock transaction kernel ID</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message id="swap-details-beam-redeem-kernel-id">
+        <source>BEAM redeem transaction kernel ID</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message id="swap-details-redeem-tx-id">
+        <source>redeem transaction ID</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message id="swap-details-redeem-tx-conf">
+        <source>redeem transaction confirmations</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message id="swap-details-beam-refund-kernel-id">
+        <source>BEAM refund transaction kernel ID</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message id="swap-details-refund-tx-id">
+        <source>refund transaction ID</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message id="swap-details-refund-tx-conf">
+        <source>refund transaction confirmations</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message id="swap-invalid-rate">
+        <source>Invalid rate</source>
+        <translation>Invalid rate</translation>
     </message>
 </context>
 </TS>
