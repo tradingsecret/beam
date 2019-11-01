@@ -307,7 +307,10 @@ void Node::Wanted::OnTimer()
     {
         Item& n = m_lst.front();
         if (t_ms - n.m_Advertised_ms < timeout_ms)
+        {
+            SetTimer();
             break;
+        }
 
         OnExpired(n.m_Key); // should not invalidate our structure
         Delete(n); // will also reschedule the timer
@@ -553,7 +556,7 @@ void Node::Processor::DeleteOutdated()
 			continue;
 		Transaction& tx = *x.m_pValue;
 
-		if (!ValidateTxContext(tx, x.m_Threshold.m_Height))
+		if (!ValidateTxContext(tx, x.m_Threshold.m_Height, true))
 			txp.Delete(x);
 	}
 }
@@ -661,6 +664,25 @@ void Node::MaybeGenerateRecovery()
 void Node::Processor::OnRolledBack()
 {
     LOG_INFO() << "Rolled back to: " << m_Cursor.m_ID;
+
+	// Delete shielded txs which referenced shielded outputs which were reverted
+	TxPool::Fluff& txp = get_ParentObj().m_TxPool;
+	for (TxPool::Fluff::Queue::iterator it = txp.m_Queue.begin(); txp.m_Queue.end() != it; )
+	{
+		TxPool::Fluff::Element& x = (it++)->get_ParentObj();
+		if (x.m_pValue && !IsShieldedInPool(*x.m_pValue))
+			txp.Delete(x);
+	}
+
+	TxPool::Stem& txps = get_ParentObj().m_Dandelion;
+	for (TxPool::Stem::TimeSet::iterator it = txps.m_setTime.begin(); txps.m_setTime.end() != it; )
+	{
+		TxPool::Stem::Element& x = (it++)->get_ParentObj();
+		if (!IsShieldedInPool(*x.m_pValue))
+			txps.Delete(x);
+			
+	}
+
 
 	IObserver* pObserver = get_ParentObj().m_Cfg.m_Observer;
 	if (pObserver)
@@ -2136,7 +2158,7 @@ uint8_t Node::ValidateTx(Transaction::Context& ctx, const Transaction& tx)
 	if (!(m_Processor.ValidateAndSummarize(ctx, tx, tx.get_Reader()) && ctx.IsValidTransaction()))
 		return proto::TxStatus::Invalid;
 
-	if (!m_Processor.ValidateTxContext(tx, ctx.m_Height))
+	if (!m_Processor.ValidateTxContext(tx, ctx.m_Height, false))
 		return proto::TxStatus::InvalidContext;
 
 	if (ctx.m_Height.m_Min >= Rules::get().pForks[1].m_Height)
@@ -2651,7 +2673,7 @@ bool Node::OnTransactionFluff(Transaction::Ptr&& ptxArg, const Peer* pPeer, TxPo
 		m_TxPool.Delete(txDel);
 	}
 
-	if (!pNewTxElem)
+    if (!pNewTxElem)
 		return false;
 
     proto::HaveTransaction msgOut;
@@ -2692,7 +2714,7 @@ void Node::Dandelion::OnTimedOut(Element& x)
 
 bool Node::Dandelion::ValidateTxContext(const Transaction& tx, const HeightRange& hr)
 {
-    return get_ParentObj().m_Processor.ValidateTxContext(tx, hr);
+    return get_ParentObj().m_Processor.ValidateTxContext(tx, hr, true);
 }
 
 void Node::Peer::OnLogin(proto::Login&& msg)
@@ -3018,6 +3040,60 @@ void Node::Peer::OnMsg(proto::GetProofUtxo&& msg)
     Send(t.m_Msg);
 }
 
+void Node::Peer::OnMsg(proto::GetProofShieldedTxo&& msg)
+{
+	proto::ProofShieldedTxo msgOut;
+
+	Processor& p = m_This.m_Processor;
+	if (!p.IsFastSync())
+	{
+		UtxoTree::Key key;
+		key.SetShielded(msg.m_Commitment, true);
+
+		UtxoTree::Cursor cu;
+		bool bCreate = false;
+
+		const UtxoTree::MyLeaf* pLeaf = p.get_Utxos().Find(cu, key, bCreate);
+		if (pLeaf)
+		{
+			const UtxoTree::MyLeaf& v = *pLeaf;
+			UtxoTree::Key::Data d;
+			d = v.m_Key;
+
+			msgOut.m_ID = pLeaf->m_ID;
+			p.get_Utxos().get_Proof(msgOut.m_Proof, cu);
+
+			msgOut.m_Proof.emplace_back();
+			msgOut.m_Proof.back().first = false;
+			msgOut.m_Proof.back().second = p.m_Cursor.m_History;
+		}
+	}
+
+	Send(msgOut);
+}
+
+void Node::Peer::OnMsg(proto::GetShieldedList&& msg)
+{
+	proto::ShieldedList msgOut;
+
+	Processor& p = m_This.m_Processor;
+	if ((msg.m_Id0 < p.m_Extra.m_Shielded) && msg.m_Count)
+	{
+		if (msg.m_Count > Lelantus::Cfg::Max::N)
+			msg.m_Count = Lelantus::Cfg::Max::N;
+
+		TxoID n = p.m_Extra.m_Shielded - msg.m_Id0;
+
+		if (msg.m_Count > n)
+			msg.m_Count = static_cast<uint32_t>(n);
+
+		msgOut.m_Items.resize(msg.m_Count);
+		p.get_DB().ShieldedRead(msg.m_Id0, &msgOut.m_Items.front(), msg.m_Count);
+	}
+
+	Send(msgOut);
+}
+
 bool Node::Processor::BuildCwp()
 {
     if (!m_Cwp.IsEmpty())
@@ -3093,9 +3169,9 @@ void Node::Peer::OnMsg(proto::BbsMsg&& msg)
 		ECC::Hash::Value hv;
 		proto::Bbs::get_Hash(hv, msg);
 
-		if (!proto::Bbs::IsHashValid(hv))
+        if (!proto::Bbs::IsHashValid(hv))
 			return; // drop
-	}
+    }
 
 	if (!m_This.m_Cfg.m_Bbs.IsEnabled())
 		ThrowUnexpected();
@@ -3105,14 +3181,14 @@ void Node::Peer::OnMsg(proto::BbsMsg&& msg)
 
 	Timestamp t = getTimestamp();
 
-	if (msg.m_TimePosted > t + Rules::get().DA.MaxAhead_s)
+    if (msg.m_TimePosted > t + Rules::get().DA.MaxAhead_s)
 		return; // too much ahead of time
 
-	if (msg.m_TimePosted + m_This.m_Cfg.m_Bbs.m_MessageTimeout_s  < t)
-		return; // too old
+    if (msg.m_TimePosted + m_This.m_Cfg.m_Bbs.m_MessageTimeout_s < t)
+        return; // too old
 
-	if (msg.m_TimePosted + Rules::get().DA.MaxAhead_s < m_This.m_Bbs.m_HighestPosted_s)
-		return; // don't allow too much out-of-order messages
+    if (msg.m_TimePosted + Rules::get().DA.MaxAhead_s < m_This.m_Bbs.m_HighestPosted_s)
+        return; // don't allow too much out-of-order messages
 
     NodeDB& db = m_This.m_Processor.get_DB();
     NodeDB::WalkerBbs wlk(db);
@@ -3176,7 +3252,7 @@ void Node::Peer::OnMsg(proto::BbsMsg&& msg)
 
 void Node::Peer::OnMsg(proto::BbsHaveMsg&& msg)
 {
-	if (!m_This.m_Cfg.m_Bbs.IsEnabled())
+    if (!m_This.m_Cfg.m_Bbs.IsEnabled())
 		ThrowUnexpected();
 
     NodeDB& db = m_This.m_Processor.get_DB();
@@ -3189,9 +3265,6 @@ void Node::Peer::OnMsg(proto::BbsHaveMsg&& msg)
 		// stupid compiler insists on parentheses here!
 		return; // already waiting for it
 	}
-
-	NodeDB::WalkerBbs wlk(db);
-	wlk.m_Data.m_Key = msg.m_Key;
 
     proto::BbsGetMsg msgOut;
     msgOut.m_Key = msg.m_Key;

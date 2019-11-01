@@ -91,6 +91,7 @@ list(APPEND SUPPORTED_LANGS "vi_VI")
 list(APPEND SUPPORTED_LANGS "zh_CN")
 list(APPEND SUPPORTED_LANGS "fi_FI")
 list(APPEND SUPPORTED_LANGS "fr_FR")
+list(APPEND SUPPORTED_LANGS "it_IT")
 list(APPEND SUPPORTED_LANGS "ja_JP")
 list(APPEND SUPPORTED_LANGS "ko_KR")
 list(APPEND SUPPORTED_LANGS "sv_SE")
@@ -103,6 +104,7 @@ set(UI_SRC
 
     viewmodel/helpers/list_model.h
     viewmodel/helpers/sortfilterproxymodel.cpp
+    viewmodel/helpers/token_bootstrap_manager.cpp
     viewmodel/wallet/tx_object.cpp
     viewmodel/wallet/tx_object_list.cpp
     viewmodel/wallet/wallet_view.cpp

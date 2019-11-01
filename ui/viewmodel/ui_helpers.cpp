@@ -1,8 +1,8 @@
 #include "ui_helpers.h"
-
 #include <QDateTime>
 #include <QLocale>
 #include <numeric>
+#include "3rdparty/libbitcoin/include/bitcoin/bitcoin/formats/base_10.hpp"
 
 using namespace std;
 using namespace beam;
@@ -25,10 +25,11 @@ namespace beamui
         return QString::fromStdString(id);
     }
     
-    QString AmountToString(const Amount& value, Currencies coinType)
+    QString AmountToUIString(const Amount& value, Currencies coinType)
     {
-        auto realAmount = double(int64_t(value)) / Rules::Coin;
-        QString amount = QLocale().toString(realAmount, 'f', QLocale::FloatingPointShortest);
+        // TODO implement for another currencies
+        std::string btc = libbitcoin::satoshi_to_btc(value);
+        QString amount = QString::fromStdString(btc);
 
         QString coinSign;
         switch (coinType)
@@ -56,17 +57,19 @@ namespace beamui
         return amount + coinSign;
     }
 
+    beam::Amount UIStringToAmount(const QString& value)
+    {
+        beam::Amount amount = 0;
+        libbitcoin::btc_to_satoshi(amount, value.toStdString());
+        return amount;
+    }
+
     QString toString(const beam::Timestamp& ts)
     {
         QDateTime datetime;
         datetime.setTime_t(ts);
 
         return datetime.toString(Qt::SystemLocaleShortDate);
-    }
-
-    double Beam2Coins(const Amount& value)
-    {
-        return double(int64_t(value)) / Rules::Coin;
     }
 
     Currencies convertSwapCoinToCurrency(wallet::AtomicSwapCoin coin)

@@ -81,6 +81,11 @@ struct WalletModelBridge : public Bridge<IWalletModelAsync>
         call_async(&IWalletModelAsync::getWalletStatus);
     }
 
+    void getTransactions() override
+    {
+        call_async(&IWalletModelAsync::getTransactions);
+    }
+
     void getUtxosStatus() override
     {
         call_async(&IWalletModelAsync::getUtxosStatus);
@@ -91,12 +96,7 @@ struct WalletModelBridge : public Bridge<IWalletModelAsync>
         call_async(&IWalletModelAsync::getAddresses, own);
     }
     
-#ifdef BEAM_ATOMIC_SWAP_SUPPORT
-    void setSwapOffersCoinType(AtomicSwapCoin type) override
-    {
-		call_async(&IWalletModelAsync::setSwapOffersCoinType, type);
-    }
-    
+#ifdef BEAM_ATOMIC_SWAP_SUPPORT    
     void getSwapOffers() override
     {
 		call_async(&IWalletModelAsync::getSwapOffers);
@@ -242,9 +242,6 @@ namespace beam::wallet
 					io::Reactor::GracefulIntHandler gih(*m_reactor);
 
 					std::unique_ptr<WalletSubscriber> wallet_subscriber;
-
-                    onStatus(getStatus());
-                    onTxStatus(ChangeAction::Reset, m_walletDB->getTxHistory());
 
                     static const unsigned LOG_ROTATION_PERIOD_SEC = 3 * 3600; // 3 hours
                     static const unsigned LOG_CLEANUP_PERIOD_SEC = 120 * 3600; // 5 days
@@ -419,17 +416,14 @@ namespace beam::wallet
     void WalletClient::onCoinsChanged()
     {
         onAllUtxoChanged(getUtxos());
-        // TODO may be it needs to delete
-        onStatus(getStatus());
     }
 
     void WalletClient::onTransactionChanged(ChangeAction action, const std::vector<TxDescription>& items)
     {
         onTxStatus(action, items);
-        onStatus(getStatus());
     }
 
-    void WalletClient::onSystemStateChanged()
+    void WalletClient::onSystemStateChanged(const Block::SystemState::ID& stateID)
     {
         onStatus(getStatus());
     }
@@ -597,14 +591,15 @@ namespace beam::wallet
     void WalletClient::getWalletStatus()
     {
         onStatus(getStatus());
+    }
+
+    void WalletClient::getTransactions()
+    {
         onTxStatus(ChangeAction::Reset, m_walletDB->getTxHistory(wallet::TxType::ALL));
-        onAddresses(false, m_walletDB->getAddresses(false));
-        onAddresses(true, m_walletDB->getAddresses(true));
     }
 
     void WalletClient::getUtxosStatus()
     {
-        onStatus(getStatus());
         onAllUtxoChanged(getUtxos());
     }
 
@@ -614,14 +609,6 @@ namespace beam::wallet
     }
 
 #ifdef BEAM_ATOMIC_SWAP_SUPPORT
-    void WalletClient::setSwapOffersCoinType(AtomicSwapCoin type)
-    {
-        if (auto p = m_offersBulletinBoard.lock())
-        {
-            p->selectSwapCoin(type);
-        }
-    }
-
     void WalletClient::getSwapOffers()
     {
         if (auto p = m_offersBulletinBoard.lock())

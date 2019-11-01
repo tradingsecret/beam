@@ -8,7 +8,7 @@ import "."
 import "../utils.js" as Utils
 
 Control {
-    id:            thisControl
+    id:            control
     leftPadding:   25
     rightPadding:  25
     topPadding:    20
@@ -17,12 +17,19 @@ Control {
     //
     // Common props
     //
-    property alias  title: controlTitle.text
-    property string feeRateLabel: ""
-    property int    minFeeRate:   0
-    property string color: Qt.rgba(Style.content_main.r, Style.content_main.g, Style.content_main.b, 0.5)
-    property alias  useElectrum:  useELSwitch.checked
-    property bool   canEdit: true
+    property alias  title:                    controlTitle.text
+    property alias  showSeedDialogTitle:      seedPhraseDialog.showSeedDialogTitle
+    property alias  showAddressesDialogTitle: showAddressesDialog.showAddressesDialogTitle
+    property string feeRateLabel:        ""
+    property int    minFeeRate:          0
+    property string color:               Qt.rgba(Style.content_main.r, Style.content_main.g, Style.content_main.b, 0.5)
+    property alias  editElectrum:        useElectrumSwitch.checked
+    property bool   canEdit:             true
+
+    property bool   isConnected:            false
+    property bool   isNodeConnection:       false
+    property bool   isElectrumConnection:   false
+    property alias  connectionStatus:       statusIndicator.status
 
     //
     // Node props
@@ -30,112 +37,199 @@ Control {
     property alias  address:      addressInput.address
     property alias  username:     usernameInput.text
     property alias  password:     passwordInput.text
-    property int    feeRate:      0
+    property alias  feeRate:      feeRateInput.fee
+    property bool   canEditNode:  !control.isNodeConnection
 
-    onAddressChanged:  internalNode.changed = true
-    onUsernameChanged: internalNode.changed = true
-    onPasswordChanged: internalNode.changed = true
-    onFeeRateChanged:  internalNode.changed = true
+    //
+    // Electrum props
+    //
+    property alias addressElectrum:            addressInputElectrum.address
+    property alias seedPhrasesElectrum:        seedPhraseDialog.seedPhrasesElectrum
+    property alias phrasesSeparatorElectrum:   seedPhraseDialog.phrasesSeparatorElectrum
+    property bool  isCurrentElectrumSeedValid: false
+    property bool  canEditElectrum:            !control.isElectrumConnection
 
+    // function to get "receiving" addresses
+    property var   getAddressesElectrum:       undefined
+
+    ConfirmPasswordDialog {
+        id: confirmPasswordDialog
+        parent: control.parent
+    }
+
+    //
+    // signals
+    //
+    signal disconnect
+    // node
     signal applyNode
-    signal switchOffNode
+    signal clearNode
+    signal connectToNode
+    // electrum
+    signal newSeedElectrum
+    signal restoreSeedElectrum
+    signal applyElectrum
+    signal clearElectrum
+    signal connectToElectrum
+    signal copySeedElectrum
+    signal validateCurrentSeedPhrase
+
+    QtObject {
+        id: internalCommon
+        property int    initialFeeRate
+        function restore() {
+            feeRate  = initialFeeRate
+        }
+
+        function save() {
+            initialFeeRate  = feeRate
+        }
+
+        function isChanged() {
+            return initialFeeRate !== feeRate
+        }
+    }
 
     QtObject {
         id: internalNode
         property string initialAddress
         property string initialUsername
-        property string initialPassword
-        property int    initialFeeRate
-        property bool   changed: false
+        property string initialPassword        
 
         function restore() {
             address  = initialAddress
             username = initialUsername
             password = initialPassword
-            feeRate  = initialFeeRate
-            feeRateInput.fee = initialFeeRate
-            changed  = false
         }
 
         function save() {
             initialAddress  = address
             initialUsername = username
-            initialFeeRate  = feeRate
             initialPassword = password
-            changed = false
+        }
+
+        function isChanged() {
+            return initialAddress  !== address
+                || initialUsername !== username
+                || initialPassword !== password
         }
     }
 
+    function isSettingsChanged() {
+        return  internalCommon.isChanged() || (editElectrum ? internalElectrum.isChanged() : internalNode.isChanged());
+    }
+
+    function canApplySettings() {
+        return editElectrum ? canApplyElectrum() : canApplyNode();
+    }
+
+    function applyChanges() {
+        internalCommon.save();
+        return editElectrum ? applyChangesElectrum() : applyChangesNode();
+    }
+
+    function restoreSettings() {
+        internalCommon.restore();
+        return editElectrum ? internalElectrum.restore() : internalNode.restore();
+    }
+
+    function haveSettings() {
+        return editElectrum ? haveElectrumSettings() : haveNodeSettings();
+    }
+
+    function clear() {
+        internalCommon.save();
+        if (editElectrum) {
+            control.clearElectrum();
+            internalElectrum.save();
+        }
+        else {
+            control.clearNode();
+            internalNode.save();
+        }
+    }
+
+    function canClear() {
+        return control.canEdit && (editElectrum ? canClearElectrum() : canClearNode());
+    }
+
+    function canDisconnect() {
+        return control.canEdit && isConnected && (editElectrum ? canDisconnectElectrum() : canDisconnectNode());
+    }
+
     function canApplyNode() {
-        return internalNode.changed && feeRate >= minFeeRate && password.length && username.length && addressInput.isValid
+        return feeRate >= minFeeRate && password.length && username.length && addressInput.isValid
     }
 
     function applyChangesNode() {
         internalNode.save()
-        thisControl.applyNode()
+        control.applyNode()
     }
 
-    function canSwitchOffNode () {
-        return internalNode.initialAddress.length  != 0 ||
-               internalNode.initialUsername.length != 0 ||
-               internalNode.initialPassword.length != 0
+    function canClearNode() {
+        return !isNodeConnection && (internalNode.initialPassword.length || internalNode.initialUsername.length || internalNode.initialAddress.length);
+    }
+
+    function canDisconnectNode() {
+        return isNodeConnection;
+    }
+
+    function haveNodeSettings() {
+        return feeRate >= minFeeRate && password.length && username.length && addressInput.isValid;
     }
 
     //
     // Electrum props
     //
-    property alias  addressEL:    addressInputEL.address
-    property alias  seedEL:       seedInputEL.text
-    property int    feeRateEL:    0
-
-    onAddressELChanged:  internalEL.changed = true
-    onSeedELChanged:     internalEL.changed = true
-    onFeeRateELChanged:  internalEL.changed = true
-
-    signal newSeedEL
-    signal applyEL
-    signal switchOffEL
 
     QtObject {
-        id: internalEL
+        id: internalElectrum
         property string initialAddress
         property string initialSeed
-        property int    initialFeeRate
-        property bool   changed: false
+        property bool   isSeedChanged: false
 
         function restore() {
-            addressEL = initialAddress
-            seedEL    = initialSeed
-            feeRateEL = initialFeeRate
-            feeRateInputEL.fee = initialFeeRate
-            changed  = false
+            isSeedChanged = false
+            addressElectrum = initialAddress
+            control.restoreSeedElectrum()
         }
 
         function save() {
-            initialAddress  = addressEL
-            initialSeed     = seedEL
-            initialFeeRate  = feeRateEL
-            changed = false
+            initialAddress  = addressElectrum
+            isSeedChanged = false
+        }
+
+        function isChanged() {
+            return initialAddress !== addressElectrum || isSeedChanged
         }
     }
 
-    function canApplyEL() {
-        return internalEL.changed && feeRateEL >= minFeeRate && seedInputEL.acceptableInput && addressInputEL.isValid
+    function canApplyElectrum() {
+        return feeRate >= minFeeRate && isCurrentElectrumSeedValid && addressInputElectrum.isValid
     }
 
-    function applyChangesEL() {
-        internalEL.save()
-        thisControl.applyEL()
+    function canClearElectrum() {
+        return !isElectrumConnection && (internalElectrum.initialAddress.length || isCurrentElectrumSeedValid);
     }
 
-    function canSwitchOffEL () {
-        return internalEL.initialAddress.length  != 0 ||
-               internalEL.initialSeed.length != 0
+    function canDisconnectElectrum() {
+        return isElectrumConnection;
+    }
+
+    function applyChangesElectrum() {
+        internalElectrum.save();
+        control.applyElectrum();
+    }
+
+    function haveElectrumSettings() {
+        return feeRate >= minFeeRate && isCurrentElectrumSeedValid && addressInputElectrum.isValid;
     }
 
     Component.onCompleted: {
-        internalNode.save()
-        internalEL.save()
+        control.editElectrum = control.isElectrumConnection;
+        internalCommon.save();
+        internalNode.save();
+        internalElectrum.save();
     }
 
     background: Rectangle {
@@ -147,62 +241,30 @@ Control {
         RowLayout {
             width: parent.width
 
+            ExternalNodeStatus {
+                id:                     statusIndicator
+                width:                  10
+                height:                 10
+                Layout.rightMargin:     20
+            }
+
             SFText {
-                id:                  controlTitle
-                color:               thisControl.color
-                font.pixelSize:      14
-                font.weight:         Font.Bold
-                font.capitalization: Font.AllUppercase
-                font.letterSpacing:  3.11
+                id:                     controlTitle
+                Layout.topMargin:       3
+                color:                  control.color
+                font.pixelSize:         14
+                font.weight:            Font.Bold
+                font.capitalization:    Font.AllUppercase
+                font.letterSpacing:     3.11
             }
-
-            Item {
-                Layout.fillWidth: true
-            }
-
-            LinkButton {
-                Layout.alignment: Qt.AlignVCenter
-                //% "Disconnect"
-                text:       qsTrId("settings-reset")
-                visible:    thisControl.canEdit && !useElectrum && canSwitchOffNode()
-                onClicked:  {
-                    thisControl.switchOffNode()
-                    internalNode.save()
-                }
-            }
-
-            LinkButton {
-                Layout.alignment: Qt.AlignVCenter
-                //% "Disconnect"
-                text:       qsTrId("settings-reset")
-                visible:    thisControl.canEdit && useElectrum && canSwitchOffEL()
-                onClicked:  {
-                    thisControl.switchOffEL()
-                    internalEL.save()
-                }
-            }
-        }
-
-        SFText {
-            visible:                 !thisControl.canEdit
-            Layout.fillWidth:        true
-            Layout.preferredHeight:  editableLayout.height
-            horizontalAlignment:     Text.AlignHCenter
-            verticalAlignment:       Text.AlignVCenter
-            font.pixelSize:          14
-            wrapMode:                Text.WordWrap
-            color:                   thisControl.color
-            lineHeight:              1.1
-            //% "You cannot change settings\nwhile active transaction is in progress"
-            text:                    qsTrId("settings-progress-na")
         }
 
         ColumnLayout {
             id: editableLayout
             Layout.fillHeight: true
             Layout.fillWidth:  true
-            visible: thisControl.canEdit
 
+            // Node & Electrum switch
             RowLayout {
                 Layout.topMargin: 18
                 Layout.bottomMargin: 18
@@ -211,12 +273,19 @@ Control {
                 SFText {
                     //% "Node"
                     text:  qsTrId("settings-swap-node")
-                    color: useELSwitch.checked ? thisControl.color : Style.active
+                    color: useElectrumSwitch.checked ? control.color : Style.active
                     font.pixelSize: 14
+                    MouseArea {
+                        anchors.fill: parent
+                        acceptedButtons: Qt.LeftButton
+                        onClicked: {
+                            useElectrumSwitch.checked = !useElectrumSwitch.checked;
+                        }
+                    }
                 }
 
                 CustomSwitch {
-                    id:          useELSwitch
+                    id:          useElectrumSwitch
                     alwaysGreen: true
                     spacing:     0
                 }
@@ -224,257 +293,786 @@ Control {
                 SFText {
                     //% "Electrum"
                     text: qsTrId("general-electrum")
-                    color: useELSwitch.checked ? Style.active : thisControl.color
+                    color: useElectrumSwitch.checked ? Style.active : control.color
                     font.pixelSize: 14
-                }
-            }
-
-            ColumnLayout {
-                visible: !useElectrum
-                id:      nodeLayout
-
-                //
-                // My Address
-                //
-                GridLayout{
-                    columns:          2
-                    columnSpacing:    30
-                    rowSpacing:       15
-
-                    SFText {
-                        font.pixelSize: 14
-                        color:          thisControl.color
-                        //% "Node Address"
-                        text:           qsTrId("settings-node-address")
-                    }
-
-                    IPAddrInput {
-                        id:               addressInput
-                        Layout.fillWidth: true
-                        color:            Style.content_main
-                    }
-
-                    SFText {
-                        font.pixelSize: 14
-                        color:          thisControl.color
-                        //% "Username"
-                        text:           qsTrId("settings-username")
-                    }
-
-                    SFTextInput {
-                        id:               usernameInput
-                        Layout.fillWidth: true
-                        font.pixelSize:   14
-                        color:            Style.content_main
-                        activeFocusOnTab: true
-                    }
-
-                    SFText {
-                        font.pixelSize: 14
-                        color:          thisControl.color
-                        //% "Password"
-                        text:           qsTrId("settings-password")
-                    }
-
-                    SFTextInput {
-                        id:               passwordInput
-                        Layout.fillWidth: true
-                        font.pixelSize:   14
-                        color:            Style.content_main
-                        activeFocusOnTab: true
-                        echoMode:         TextInput.Password
-                    }
-
-                    SFText {
-                        font.pixelSize: 14
-                        color: thisControl.color
-                        //% "Default fee"
-                        text:  qsTrId("settings-fee-rate")
-                    }
-
-                    FeeInput {
-                        id:               feeRateInput
-                        Layout.fillWidth: true
-                        fillWidth:        true
-                        fee:              thisControl.feeRate
-                        minFee:           thisControl.minFeeRate
-                        feeLabel:         thisControl.feeRateLabel
-                        color:            Style.content_main
-                        spacing:          0
-
-                        Connections {
-                            target: thisControl
-                            onFeeRateChanged: feeRateInput.fee = thisControl.feeRate
+                    MouseArea {
+                        anchors.fill: parent
+                        acceptedButtons: Qt.LeftButton
+                        onClicked: {
+                            useElectrumSwitch.checked = !useElectrumSwitch.checked;
                         }
                     }
-
-                    Binding {
-                        target:   thisControl
-                        property: "feeRate"
-                        value:    feeRateInput.fee
-                    }
                 }
 
-                RowLayout {
+                Item {
                     Layout.fillWidth: true
-                    Layout.topMargin: 25
-                    spacing: 15
+                }
 
-                    Item {
-                        Layout.fillWidth: true
+                LinkButton {
+                    Layout.alignment: Qt.AlignVCenter
+                    linkStyle: "<style>a:link {color: '#f9605b'; text-decoration: none;}</style>"
+                    //% "Clear"
+                    text:       qsTrId("settings-reset")
+                    visible:    canClear()
+                    onClicked:  {
+                        if (editElectrum) {
+                            //: electrum settings, ask password to clear seed phrase, dialog title
+                            //% "Clear seed phrase"
+                            confirmPasswordDialog.dialogTitle = qsTrId("settings-swap-confirm-clear-seed-title");
+                            //: electrum settings, ask password to clear seed phrase, dialog message
+                            //% "Enter your wallet password to clear seed phrase"
+                            confirmPasswordDialog.dialogMessage = qsTrId("settings-swap-confirm-clear-seed-message");
+                            confirmPasswordDialog.onDialogAccepted = function() {
+                                clear();
+                            };
+                            confirmPasswordDialog.open();
+                        } else {
+                            clear();
+                        }
                     }
+                }
 
-                    CustomButton {
-                        Layout.preferredHeight: 38
-                        Layout.preferredWidth:  130
-                        leftPadding:  25
-                        rightPadding: 25
-                        text:         qsTrId("general-cancel")
-                        icon.source:  "qrc:/assets/icon-cancel-white.svg"
-                        enabled:      internalNode.changed
-                        onClicked:    internalNode.restore()
+                LinkButton {
+                    Layout.alignment: Qt.AlignVCenter
+                    linkStyle: "<style>a:link {color: '#f9605b'; text-decoration: none;}</style>"
+                    //% "Disconnect"
+                    text:       qsTrId("settings-swap-disconnect")
+                    visible:    canDisconnect()
+                    onClicked:  disconnect()
+                }
+            }
+
+            GridLayout {
+                columns:          2
+                columnSpacing:    30
+                rowSpacing:       15
+
+                SFText {
+                    visible:        !editElectrum
+                    font.pixelSize: 14
+                    color:          control.color
+                    //% "Node Address"
+                    text:           qsTrId("settings-node-address")
+                }
+
+                IPAddrInput {
+                    id:               addressInput
+                    visible:          !editElectrum
+                    Layout.fillWidth: true
+                    color:            Style.content_main
+                    underlineVisible: canEditNode
+                    readOnly:         !canEditNode
+                }
+
+                SFText {
+                    visible:        !editElectrum
+                    font.pixelSize: 14
+                    color:          control.color
+                    //% "Username"
+                    text:           qsTrId("settings-username")
+                }
+
+                SFTextInput {
+                    id:               usernameInput
+                    visible:          !editElectrum
+                    Layout.fillWidth: true
+                    font.pixelSize:   14
+                    color:            Style.content_main
+                    activeFocusOnTab: true
+                    underlineVisible: canEditNode
+                    readOnly:         !canEditNode
+                }
+
+                SFText {
+                    visible:        !editElectrum
+                    font.pixelSize: 14
+                    color:          control.color
+                    //% "Password"
+                    text:           qsTrId("settings-password")
+                }
+
+                SFTextInput {
+                    id:               passwordInput
+                    visible:          !editElectrum
+                    Layout.fillWidth: true
+                    font.pixelSize:   14
+                    color:            Style.content_main
+                    activeFocusOnTab: true
+                    echoMode:         TextInput.Password
+                    underlineVisible: canEditNode
+                    readOnly:         !canEditNode
+                }
+
+                // electrum settings
+                SFText {
+                    visible:        editElectrum
+                    font.pixelSize: 14
+                    color:          control.color
+                    //% "Node Address"
+                    text:           qsTrId("settings-node-address")
+                }
+
+                IPAddrInput {
+                    visible:          editElectrum
+                    id:               addressInputElectrum
+                    Layout.fillWidth: true
+                    color:            Style.content_main
+                    ipOnly:           false
+                    underlineVisible: canEditElectrum
+                    readOnly:         !canEditElectrum
+                }
+
+                // common fee rate
+                SFText {
+                    font.pixelSize: 14
+                    color:          control.color
+                    //% "Default fee"
+                    text:           qsTrId("settings-fee-rate")
+                }
+
+                FeeInput {
+                    id:                  feeRateInput
+                    Layout.fillWidth:    true
+                    fillWidth:           true
+                    inputPreferredWidth: -1
+                    minFee:              control.minFeeRate
+                    feeLabel:            control.feeRateLabel
+                    color:               Style.content_main
+                    spacing:             0
+                    underlineVisible:    canEdit
+                    readOnly:            !canEdit
+                }
+            }
+
+            // electrum settings - seed: new || edit
+            RowLayout {
+                visible:             editElectrum && canEditElectrum
+                spacing:             20
+                Layout.fillWidth:    true
+                Layout.topMargin:    30
+                Layout.bottomMargin: control.canEdit ? 37 : 15
+
+                LinkButton {
+                    text:      isCurrentElectrumSeedValid ?   
+                               //% "Edit your seed phrase"
+                               qsTrId("settings-swap-edit-seed") :
+                               //% "Enter your seed phrase"
+                               qsTrId("settings-swap-enter-seed")
+                    onClicked: {
+                        function editSeedPhrase(isSeedPhraseValid) {
+                            seedPhraseDialog.setModeEdit();
+                            seedPhraseDialog.isCurrentElectrumSeedValid = isSeedPhraseValid;
+                            seedPhraseDialog.open();
+                        }
+
+                        if (isCurrentElectrumSeedValid) {
+                            //: electrum settings, ask password to edit seed phrase, dialog title
+                            //% "Edit seed phrase"
+                            confirmPasswordDialog.dialogTitle = qsTrId("settings-swap-confirm-edit-seed-title");
+                            //: electrum settings, ask password to edit seed phrase, dialog message
+                            //% "Enter your wallet password to edit the phrase"
+                            confirmPasswordDialog.dialogMessage = qsTrId("settings-swap-confirm-edit-seed-message");
+                            confirmPasswordDialog.onDialogAccepted = function() {
+                                editSeedPhrase(true);
+                            };
+                            confirmPasswordDialog.open();
+                        } else {
+                            editSeedPhrase(false);
+                        }
                     }
+                }
 
-                    PrimaryButton {
-                        leftPadding:  25
-                        rightPadding: 25
-                        text:         qsTrId("settings-apply")
-                        icon.source:  "qrc:/assets/icon-done.svg"
-                        enabled:      canApplyNode()
-                        onClicked:    applyChangesNode()
-                        Layout.preferredHeight: 38
-                        Layout.preferredWidth:  130
+                SFText {
+                    font.pixelSize: 14
+                    color:          control.color
+                    //% "or"
+                    text:           qsTrId("settings-swap-label-or")
+                }
+
+                LinkButton {
+                    //% "Generate new seed phrase"
+                    text:             qsTrId("settings-swap-new-seed")
+                    onClicked: {
+                        function generateSeedPhrase() {
+                            newSeedElectrum();
+                            seedPhraseDialog.setModeNew();
+                            seedPhraseDialog.open();
+                        }
+
+                        if (isCurrentElectrumSeedValid) {
+                            //: electrum settings, ask password to generate new seed phrase, dialog title
+                            //% "Generate new seed phrase"
+                            confirmPasswordDialog.dialogTitle = qsTrId("settings-swap-confirm-generate-seed-title");
+                            //: electrum settings, ask password to generate new seed phrase, dialog message
+                            //% "Enter your wallet password to generate new seed phrase"
+                            confirmPasswordDialog.dialogMessage = qsTrId("settings-swap-confirm-generate-seed-message");
+                            confirmPasswordDialog.onDialogAccepted = function() {
+                                generateSeedPhrase();
+                            };
+                            confirmPasswordDialog.open();
+                        } else {
+                            generateSeedPhrase();
+                        }
                     }
                 }
             }
 
-            ColumnLayout {
-                visible: useElectrum
-                id:      electrumLayout
+            // electrum settings: show seed && show addresses
+            RowLayout {
+                visible:             editElectrum && !canEditElectrum
+                spacing:             20
+                Layout.fillWidth:    true
+                Layout.topMargin:    30
+                Layout.bottomMargin: control.canEdit ? 37 : 15
 
-                //
-                // My Address
-                //
-                GridLayout{
-                    columns:          2
-                    columnSpacing:    30
-                    rowSpacing:       12
-
-                    SFText {
-                        font.pixelSize: 14
-                        color:          thisControl.color
-                        //% "Node Address"
-                        text:           qsTrId("settings-node-address")
+                LinkButton {
+                    //% "Show seed phrase"
+                    text:      qsTrId("settings-swap-show-seed")
+                    onClicked: {
+                        //: electrum settings, ask password to show seed phrase, dialog title
+                        //% "Show seed phrase"
+                        confirmPasswordDialog.dialogTitle = qsTrId("settings-swap-confirm-show-seed-title");
+                        //: electrum settings, ask password to show seed phrase, dialog message
+                        //% "Enter your wallet password to see the phrase"
+                        confirmPasswordDialog.dialogMessage = qsTrId("settings-swap-confirm-show-seed-message");
+                        confirmPasswordDialog.onDialogAccepted = function() {
+                            seedPhraseDialog.setModeView();
+                            seedPhraseDialog.open();
+                        };
+                        confirmPasswordDialog.open();
                     }
+                }
 
-                    IPAddrInput {
-                        id:               addressInputEL
-                        Layout.fillWidth: true
-                        color:            Style.content_main
-                        ipOnly:           false
+                LinkButton {
+                    //% "Show wallet addresses"
+                    text:      qsTrId("settings-swap-show-addresses")
+                    onClicked: {                        
+                        showAddressesDialog.addressesElectrum = getAddressesElectrum();
+                        showAddressesDialog.open();
                     }
+                }
+            }
 
-                    SFText {
-                        font.pixelSize: 14
-                        color:          thisControl.color
-                        ////% "Username"
-                        text:           "Seed Phrase"
-                    }
+            // alert text if we have active transactions
+            SFText {
+                visible:               !control.canEdit
+                Layout.topMargin:      27
+                Layout.preferredWidth: 400
+                horizontalAlignment:   Text.AlignHCenter
+                verticalAlignment:     Text.AlignVCenter
+                font.pixelSize:        14
+                wrapMode:              Text.WordWrap
+                color:                 control.color
+                lineHeight:            1.1 
+                //% "You cannot disconnect wallet, edit seed phrase or change default\nfee while you have transactions in progress."
+                text:                  qsTrId("settings-progress-na")
+            }
 
-                    ColumnLayout {
-                        Layout.fillWidth:    true
-                        Layout.topMargin:    5
-                        Layout.bottomMargin: 6
-                        spacing:             0
+            // buttons
+            // "cancel" "apply"
+            // "connect to node" or "connect to electrum"
+            RowLayout {
+                visible:          control.canEdit
+                Layout.fillWidth: true
+                Layout.topMargin: 25
+                spacing:          15
 
-                        SeedInput {
-                            id:                  seedInputEL
-                            Layout.fillWidth:    true
-                            font.pixelSize:      14
-                            activeFocusOnTab:    true
-                            implicitHeight:      70
-                            placeholderText:     text.length > 0 ?
-                                                    //% "Click to see seed phrase"
-                                                    qsTrId("settings-see-seed") :
-                                                    //% "Double click to generate new seed phrase"
-                                                    qsTrId("settings-new-seed")
-                            onNewSeed: newSeedEL()
-                        }
+                Item {
+                    Layout.fillWidth: true
+                }
 
-                        Item {
-                            Layout.fillWidth: true
+                CustomButton {
+                    visible:                !connectButtonId.visible
+                    Layout.preferredHeight: 38
+                    Layout.preferredWidth:  130
+                    leftPadding:  25
+                    rightPadding: 25
+                    text:         qsTrId("general-cancel")
+                    icon.source:  "qrc:/assets/icon-cancel-white.svg"
+                    enabled:      isSettingsChanged()
+                    onClicked:    restoreSettings()
+                }
+
+                PrimaryButton {
+                    visible:                !connectButtonId.visible
+                    leftPadding:            25
+                    rightPadding:           25
+                    text:                   qsTrId("settings-apply")
+                    icon.source:            "qrc:/assets/icon-done.svg"
+                    enabled:                isSettingsChanged() && canApplySettings()
+                    onClicked:              applyChanges()
+                    Layout.preferredHeight: 38
+                    Layout.preferredWidth:  130
+                }
+
+                PrimaryButton {
+                    id:                     connectButtonId
+                    visible:                !isSettingsChanged() && haveSettings() && (editElectrum ? !isElectrumConnection : !isNodeConnection)
+                    leftPadding:            25
+                    rightPadding:           25
+                    text:                   editElectrum ?
+                                            //% "connect to electrum node"
+                                            qsTrId("settings-swap-connect-electrum") :
+                                            //% "connect to node"
+                                            qsTrId("settings-swap-connect-node");
+                    icon.source:            "qrc:/assets/icon-connect.svg"
+                    onClicked:              editElectrum ? connectToElectrum() : connectToNode();
+                    Layout.preferredHeight: 38
+                    Layout.preferredWidth:  editElectrum ? 250 : 195
+                }
+
+                Item {
+                    Layout.fillWidth: true
+                }
+            }
+        }
+    }
+
+    Dialog {
+        id: seedPhraseDialog
+
+        width:       800
+        height:      430
+        parent:      Overlay.overlay
+        x:           Math.round((parent.width - width) / 2)
+        y:           Math.round((parent.height - height) / 2)
+        closePolicy: Popup.NoAutoClose
+        modal:       true
+        visible:     false
+        
+        property string showSeedDialogTitle:        ""
+        property string phrasesSeparatorElectrum:   ""
+        property var    seedPhrasesElectrum:        undefined
+        property bool   isCurrentElectrumSeedValid: false
+        property bool   isSeedChanged:              false
+
+        signal newSeedElectrum
+        signal copySeedElectrum
+        signal validateFullSeedPhrase
+
+        onNewSeedElectrum: control.newSeedElectrum()
+        onCopySeedElectrum: control.copySeedElectrum()
+        onValidateFullSeedPhrase: control.validateCurrentSeedPhrase()
+        onClosed: {
+            internalElectrum.isSeedChanged = seedPhraseDialog.isSeedChanged
+        }
+
+        function setModeEdit() {
+            seedDialogContent.state = "editPhrase";
+        }
+
+        function setModeView() {
+            seedDialogContent.state = "viewPhrase";
+        }
+
+        function setModeNew() {
+            seedDialogContent.state = "newPhrase";
+        }
+
+        function applySeedPhrase() {
+            for(var i = 0; i < seedPhraseDialog.seedPhrasesElectrum.length; ++i)
+            {
+                seedPhraseDialog.seedPhrasesElectrum[i].applyChanges();
+            }
+            seedPhraseDialog.close();
+            seedPhraseDialog.isSeedChanged = false;
+        }
+
+        function undoChanges() {
+            for(var i = 0; i < seedPhraseDialog.seedPhrasesElectrum.length; ++i)
+            {
+                seedPhraseDialog.seedPhrasesElectrum[i].revertChanges();
+            }
+            validateFullSeedPhrase();
+            seedPhraseDialog.close();
+            seedPhraseDialog.isSeedChanged = false;
+        }
+
+        function updateIsSeedChanged() {
+            var isChanged = false;
+            for(var i = 0; i < seedPhraseDialog.seedPhrasesElectrum.length; ++i) {
+                isChanged |= !seedPhraseDialog.seedPhrasesElectrum[i].isCorrect;
+            }
+            isSeedChanged = isChanged;
+        }
+
+        background: Rectangle {
+            radius:       10
+            color:        Style.background_popup
+            anchors.fill: parent
+        }
+
+        contentItem: 
+        ColumnLayout {
+            id: seedDialogContent
+            anchors.fill:          parent
+            anchors.margins:       30
+            spacing:               0
+            property bool canEdit: false
+            state:                 "newPhrase"
+
+            // Title: New seed phrase / Enter your seed phrase / "coin" seed phrase
+            SFText {
+                id: seedDialogTitle
+                Layout.fillWidth:    true
+                color:               Style.white
+                horizontalAlignment: Text.AlignHCenter
+                font.pixelSize:      18
+                font.weight:         Font.Bold
+            }
+
+            // additional comment (only on "New seed phrase"):
+            SFText {
+                id: additionalInfo
+                Layout.topMargin:    14
+                Layout.fillWidth:    true
+                visible:             false
+                color:               Style.white
+                wrapMode:            Text.WordWrap
+                horizontalAlignment: Text.AlignHCenter
+                font.pixelSize:      14
+                font.weight:         Font.Normal
+                //% "Your seed phrase is the access key to all the funds! Print or write down the phrase and keep it in a safe or in a locked vault.\nWithout the phrase you will not be able to recover your money."
+                text: qsTrId("swap-seed-info-message")
+            }
+            
+            // body: seed phrase
+            GridLayout {
+                Layout.topMargin:    50
+                Layout.bottomMargin: 50
+                columns:             4
+                columnSpacing:       30
+                rowSpacing:          20
+                                    
+                Repeater {
+                    model: seedPhrasesElectrum
+                    Rectangle {
+                        id:           phraseItem
+                        border.color: seedDialogContent.canEdit ? "transparent" : Style.background_second
+                        color:        "transparent"
+                        width:        160
+                        height:       38
+                        radius:       30
+            
+                        RowLayout {
+                            spacing:      0
+                            anchors.fill: parent
+            
+                            // index
+                            Rectangle {
+                                Layout.leftMargin: 9
+
+                                color:  Style.background_second
+                                width:  20
+                                height: 20
+                                radius: 10
+            
+                                SFText {
+                                    anchors.centerIn: parent
+                                    text:             modelData.index + 1
+                                    font.pixelSize:   10
+                                    color:            Style.content_main
+                                }
+                            }
+
+                            // inpunt
+                            SFTextInput {
+                                id: phraseValue
+                                visible:               seedDialogContent.canEdit
+                                Layout.leftMargin:     10
+                                Layout.preferredWidth: 110
+
+                                font.pixelSize:   14
+                                color:            (modelData.isAllowed || modelData.value.length == 0) ? Style.content_main : Style.validator_error
+                                backgroundColor:  (modelData.isAllowed || modelData.value.length == 0) ? Style.content_main : Style.validator_error
+                                text:             modelData.value
+
+                                onTextEdited: {
+                                    var phrases = text.split(phrasesSeparatorElectrum);
+                                    if (phrases.length >= seedPhraseDialog.seedPhrasesElectrum.length) {
+                                        for(var i = 0; i < seedPhraseDialog.seedPhrasesElectrum.length; ++i)
+                                        {
+                                            seedPhraseDialog.seedPhrasesElectrum[i].value = phrases[i];
+                                        }
+                                    }
+                                }
+
+                                Binding {
+                                    target:   modelData
+                                    property: "value"
+                                    value:    phraseValue.text
+                                }
+
+                                Connections {
+                                    target: modelData
+                                    onValueChanged: {
+                                        seedPhraseDialog.updateIsSeedChanged();
+                                        seedPhraseDialog.validateFullSeedPhrase()
+                                    }
+                                }
+                            }
+
                             SFText {
-                                font.pixelSize: 12
-                                font.italic:    true
-                                color:          Style.validator_error
-                                //% "Invalid seed phrase"
-                                text:           qsTrId("settings-invalid-seed")
-                                visible:        seedInputEL.text.length && !seedInputEL.acceptableInput
+                                visible:               !seedDialogContent.canEdit
+                                Layout.leftMargin:     10
+                                Layout.preferredWidth: 110
+                                horizontalAlignment:   Text.AlignLeft
+                                text:                  modelData.phrase
+                                font.pixelSize:        14
+                                color:                 Style.content_main
                             }
                         }
                     }
+                }
+            }
 
-                    SFText {
-                        font.pixelSize: 14
-                        color: thisControl.color
-                        //% "Default fee"
-                        text:  qsTrId("settings-fee-rate")
+            // buttons
+            RowLayout {
+                spacing:                20
+                Layout.fillWidth:       true
+                Layout.preferredHeight: 38
+
+                Item {
+                    Layout.fillWidth: true
+                }
+
+                // editPhrase: "cancel" "apply"
+                CustomButton {
+                    id: cancelButtonId
+                    visible:                false
+                    Layout.preferredHeight: 38
+                    Layout.minimumWidth:    133
+                    text:                   qsTrId("general-cancel")
+                    icon.source:            "qrc:/assets/icon-cancel-white.svg"
+                    enabled:                true
+                    onClicked:              seedPhraseDialog.undoChanges()
+                }
+
+                PrimaryButton {
+                    id: applyButtonId
+                    visible:                false
+                    Layout.preferredHeight: 38
+                    Layout.minimumWidth:    126
+                    text:                   qsTrId("settings-apply")
+                    icon.source:            "qrc:/assets/icon-done.svg"
+                    enabled: {
+                        var enable = seedPhraseDialog.isCurrentElectrumSeedValid & seedPhraseDialog.isSeedChanged;
+                        for (var i = 0; i < seedPhraseDialog.seedPhrasesElectrum.length; ++i) {
+                            enable &= seedPhraseDialog.seedPhrasesElectrum[i].isAllowed;
+                        }
+                        return enable;
                     }
+                    onClicked: seedPhraseDialog.applySeedPhrase()
+                }
 
-                    FeeInput {
-                        id:               feeRateInputEL
-                        Layout.fillWidth: true
-                        fillWidth:        true
-                        fee:              thisControl.feeRateEL
-                        minFee:           thisControl.minFeeRate
-                        feeLabel:         thisControl.feeRateLabel
-                        color:            Style.content_main
-                        spacing:          0
+                // viewPhrase: "close" "copy"
+                // newPhrase:  "close" "generate another seed phrase" "copy"
+                CustomButton {
+                    id: closeButtonId
+                    visible:                false
+                    Layout.preferredHeight: 38
+                    Layout.minimumWidth:    125
+                    text:                   qsTrId("general-close")
+                    icon.source:            "qrc:/assets/icon-cancel-white.svg"
+                }
 
-                        Connections {
-                            target: thisControl
-                            onFeeRateChanged: feeRateInputEL.fee = thisControl.feeRateEL
+                CustomButton {
+                    id: generateButtonId
+                    visible:                false
+                    Layout.preferredHeight: 38
+                    Layout.minimumWidth:    271
+                    rightPadding:           20
+                    //% "generate another seed phrase"
+                    text:                   qsTrId("settings-swap-seed-generate")
+                    icon.source:            "qrc:/assets/icon-repeat-white.svg"
+                    onClicked:              seedPhraseDialog.newSeedElectrum();
+                }
+
+                PrimaryButton {
+                    id: copyButtonId
+                    visible:                false
+                    Layout.preferredHeight: 38
+                    Layout.minimumWidth:    124
+                    text:                   qsTrId("general-copy")
+                    icon.source:            "qrc:/assets/icon-copy-blue.svg"
+                    onClicked:              seedPhraseDialog.copySeedElectrum();
+                }
+
+                Item {
+                    Layout.fillWidth: true
+                }
+            }
+
+            states: [
+                State {
+                    name: "newPhrase"
+                    PropertyChanges {
+                        target: seedDialogTitle
+                        //% "New seed phrase"
+                        text: qsTrId("swap-seed-new")
+                    }
+                    PropertyChanges {
+                        target: additionalInfo
+                        visible: true
+                    }
+                    PropertyChanges {
+                        target: closeButtonId
+                        visible: true
+                        onClicked: {
+                            seedPhraseDialog.close()
                         }
                     }
-
-                    Binding {
-                        target:   thisControl
-                        property: "feeRateEL"
-                        value:    feeRateInputEL.fee
+                    PropertyChanges {
+                        target: generateButtonId
+                        visible: true
+                    }
+                    PropertyChanges {
+                        target: copyButtonId
+                        visible: true
+                    }
+                    PropertyChanges {
+                        target: seedPhraseDialog
+                        isSeedChanged: true
+                    }
+                },
+                State {
+                    name: "editPhrase"
+                    PropertyChanges {
+                        target: seedDialogTitle
+                        //% "Enter your seed phrase"
+                        text: qsTrId("swap-seed-edit")
+                    }
+                    PropertyChanges {
+                        target: seedPhraseDialog
+                        height: 380
+                    }
+                    PropertyChanges {
+                        target: seedDialogContent
+                        canEdit: true
+                    }
+                    PropertyChanges {
+                        target: cancelButtonId
+                        visible: true
+                    }
+                    PropertyChanges {
+                        target: applyButtonId
+                        visible: true
+                    }
+                },
+                State {
+                    name: "viewPhrase"
+                    PropertyChanges {
+                        target: seedDialogTitle
+                        text: showSeedDialogTitle
+                    }
+                    PropertyChanges {
+                        target: seedPhraseDialog
+                        height: 380
+                    }
+                    PropertyChanges {
+                        target: closeButtonId
+                        visible: true
+                        onClicked: seedPhraseDialog.close()
+                    }
+                    PropertyChanges {
+                        target: copyButtonId
+                        visible: true
                     }
                 }
+            ]
+        }
+    }
 
-                RowLayout {
-                    Layout.fillWidth: true
-                    Layout.topMargin: 25
-                    spacing: 15
+    Dialog {
+        id: showAddressesDialog
 
-                    Item {
-                        Layout.fillWidth: true
-                    }
+        width:   460
+        height:  400
+        parent:  Overlay.overlay
+        x:       Math.round((parent.width - width) / 2)
+        y:       Math.round((parent.height - height) / 2)
+        modal:   true
 
-                    CustomButton {
-                        Layout.preferredHeight: 38
-                        Layout.preferredWidth:  130
-                        leftPadding:  25
-                        rightPadding: 25
-                        text:         qsTrId("general-cancel")
-                        icon.source:  "qrc:/assets/icon-cancel-white.svg"
-                        enabled:      internalEL.changed
-                        onClicked:    internalEL.restore()
-                    }
+        property alias showAddressesDialogTitle: showAddressesDialogTitleId.text
+        property var   addressesElectrum: undefined
 
-                    PrimaryButton {
-                        leftPadding:  25
-                        rightPadding: 25
-                        text:         qsTrId("settings-apply")
-                        icon.source:  "qrc:/assets/icon-done.svg"
-                        enabled:      canApplyEL()
-                        onClicked:    applyChangesEL()
-                        Layout.preferredHeight: 38
-                        Layout.preferredWidth:  130
+        background: Rectangle {
+            radius:       10
+            color:        Style.background_popup
+            anchors.fill: parent
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 0
+            anchors.fill:    parent
+            anchors.margins: 30
+
+            // title
+            SFText {
+                id: showAddressesDialogTitleId
+                Layout.fillWidth:     true
+                color:                Style.white
+                horizontalAlignment:  Text.AlignHCenter
+                font.pixelSize:       18
+                font.weight:          Font.Bold
+            }
+
+            // body
+            ScrollView {
+                Layout.fillWidth:          true
+                Layout.fillHeight:         true
+                Layout.topMargin:          50
+                ScrollBar.vertical.policy: ScrollBar.AsNeeded
+                clip:                      true
+
+                ColumnLayout {
+                    Layout.fillWidth:  true
+                    Layout.fillHeight: true
+                    spacing:           30
+
+                    Repeater {
+                        model: showAddressesDialog.addressesElectrum
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 0
+
+                            SFLabel {
+                                id: addressId
+                                Layout.fillWidth:    true
+                                horizontalAlignment: Text.AlignLeft
+                                text:                modelData
+                                font.pixelSize:      14
+                                color:               Style.content_main
+                                copyMenuEnabled:     true
+                                onCopyText:          BeamGlobals.copyToClipboard(text)
+                            }
+
+                            Item {
+                                Layout.fillWidth: true
+                                Layout.preferredWidth: 55
+                            }
+
+                            CustomToolButton {
+                                Layout.alignment: Qt.AlignVCenter | Qt.AlignRight
+                                icon.source: "qrc:/assets/icon-copy.svg"
+                                //% "Copy address"
+                                ToolTip.text: qsTrId("settings-swap-copy-address")
+                                onClicked: BeamGlobals.copyToClipboard(addressId.text)
+                            }
+                        }
                     }
                 }
+            }
+
+            // buttons
+            CustomButton {
+                Layout.topMargin:       24
+                Layout.alignment:       Qt.AlignHCenter
+                Layout.preferredHeight: 38
+                Layout.preferredWidth:  125
+                text:             qsTrId("general-close")
+                icon.source:      "qrc:/assets/icon-cancel-white.svg"
+                onClicked:        showAddressesDialog.close()
             }
         }
     }

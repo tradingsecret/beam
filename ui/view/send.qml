@@ -10,12 +10,15 @@ import "controls"
 ColumnLayout {
     id: sendView
     property bool   isSwapMode: false
+    property bool   isSwapOnFly: false
+    property bool   pasteEventComplete: false
     property var    defaultFocusItem: receiverTAInput
+    property bool   isErrorDetected: false
 
     // callbacks set by parent
-    property var    onClosed: undefined
-    property var    onSwapToken: undefined
-    property var    onAddress: undefined
+    property var    onClosed: function() {}
+    property var    onSwapToken: function() {}
+    property var    onAddress: function() {}
 
     TopGradient {
         mainRoot: main
@@ -31,7 +34,7 @@ ColumnLayout {
             font.pixelSize:  18
             font.styleName:  "Bold"; font.weight: Font.Bold
             color:           Style.content_main
-            text:            isSwapMode
+            text:            isSwapMode || isSwapOnFly
                                         //% "Swap currencies"
                                         ? qsTrId("wallet-send-swap-title")
                                         //% "Send"
@@ -39,8 +42,8 @@ ColumnLayout {
         }
     }
 
-    function isTAInputValid() {
-        return receiverTAInput.text.length == 0 || BeamGlobals.isTAValid(receiverTAInput.text)
+    function isTAInputValid(token) {
+        return token.length == 0 || BeamGlobals.isTAValid(token)
     }
 
     ColumnLayout {
@@ -57,18 +60,51 @@ ColumnLayout {
             Layout.fillWidth: true
             id:               receiverTAInput
             font.pixelSize:   14
-            color:            isTAInputValid() ? Style.content_main : Style.validator_error
-            backgroundColor:  isTAInputValid() ? Style.content_main : Style.validator_error
-            font.italic :     !isTAInputValid()
+            color:            isErrorDetected
+                ? Style.validator_error
+                : Style.content_main
+            backgroundColor:  isErrorDetected
+                ? Style.validator_error
+                : Style.content_main
             validator:        RegExpValidator { regExp: /[0-9a-zA-Z]{1,}/ }
             selectByMouse:    true
             //% "Please specify contact or transaction token"
             placeholderText:  qsTrId("send-contact-placeholder")
+            font.italic:      isErrorDetected
+            onPaste: function() {
+                pasteEventComplete = true;
+            }
 
             onTextChanged: {
-                if (!isTAInputValid()) return;
-                if (receiverTAInput.text.length == 0) return;
-                BeamGlobals.isSwapToken(receiverTAInput.text) ? onSwapToken(receiverTAInput.text) : onAddress(receiverTAInput.text);
+                isErrorDetected = false;
+                isSwapOnFly = false;
+                if (receiverTAInput.text.length == 0) {
+                    pasteEventComplete = false;
+                    return;
+                }
+
+                if (!isSwapMode) {
+                    isSwapOnFly = !BeamGlobals.isAddress(receiverTAInput.text);
+                }
+
+                if (!isTAInputValid(receiverTAInput.text)) {
+                    isSwapOnFly = false;
+                    isErrorDetected = true;
+                    pasteEventComplete = false;
+                    return;
+                }
+
+                isErrorDetected = (isSwapOnFly || isSwapMode) &&
+                        !BeamGlobals.isSwapToken(receiverTAInput.text);
+                
+                if (isErrorDetected) {
+                    pasteEventComplete = false;
+                    return;
+                }
+
+                if (pasteEventComplete) {
+                    actionButton.onClicked();
+                }
             }
         }
 
@@ -79,9 +115,12 @@ ColumnLayout {
                 id:               receiverTAError
                 color:            Style.validator_error
                 font.pixelSize:   12
-                //% "Invalid address or token"
-                text:             qsTrId("wallet-send-invalid-token")
-                visible:          !isTAInputValid()
+                visible:          isErrorDetected
+                text:             isSwapMode || isSwapOnFly
+                    //% "Invalid swap token"
+                    ? qsTrId("wallet-send-invalid-token")
+                    //% "Invalid wallet address or swap token"
+                    : qsTrId("wallet-send-invalid-address-or-token")
             }
         }
 
@@ -97,6 +136,24 @@ ColumnLayout {
                 icon.source:        "qrc:/assets/icon-cancel-white.svg"
                 onClicked:          {
                     onClosed();
+                }
+            }
+            
+            CustomButton {
+                id: actionButton
+                text: isSwapMode || isSwapOnFly
+                    //% "Swap"
+                    ? qsTrId("general-swap")
+                    //% "Send"
+                    : qsTrId("general-send")
+                palette.buttonText: Style.content_opposite
+                palette.button: Style.accent_outgoing
+                icon.source: "qrc:/assets/icon-send-blue.svg"
+                enabled: !isErrorDetected && receiverTAInput.text.length
+                onClicked: {
+                    isSwapMode || isSwapOnFly
+                        ? onSwapToken(receiverTAInput.text)
+                        : onAddress(receiverTAInput.text);
                 }
             }
         }

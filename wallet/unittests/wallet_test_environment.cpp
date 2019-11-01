@@ -32,7 +32,7 @@ struct EmptyTestGateway : wallet::INegotiatorGateway
     void confirm_kernel(const TxID&, const Merkle::Hash&, wallet::SubTxID subTxID) override {}
     void get_kernel(const TxID& txID, const Merkle::Hash& kernelID, wallet::SubTxID subTxID) override {}
     bool get_tip(Block::SystemState::Full& state) const override { return false; }
-    void send_tx_params(const WalletID& peerID, wallet::SetTxParameter&&) override {}
+    void send_tx_params(const WalletID& peerID, const wallet::SetTxParameter&) override {}
     void UpdateOnNextTip(const TxID&) override {};
 };
 
@@ -339,6 +339,7 @@ class TestWallet : public Wallet
 public:
     TestWallet(IWalletDB::Ptr walletDB, IPrivateKeyKeeper::Ptr keyKeeper, TxCompletedAction&& action = TxCompletedAction(), UpdateCompletedAction&& updateCompleted = UpdateCompletedAction())
         : Wallet{ walletDB, keyKeeper, std::move(action), std::move(updateCompleted)}
+        , m_FlushTimer{ io::Timer::create(io::Reactor::get_Current()) }
     {
 
     }
@@ -351,6 +352,8 @@ public:
 private:
     void register_tx(const TxID& txID, Transaction::Ptr tx, SubTxID subTxID = kDefaultSubTxID) override
     {
+        m_FlushTimer->cancel();
+        m_FlushTimer->start(1000, false, [this]() {FlushBuffer(); });
         if (m_Buffer.capacity() == 0)
         {
             Wallet::SendTransactionToNode(txID, tx, subTxID);
@@ -382,6 +385,7 @@ private:
     }
 
     vector<tuple<TxID, Transaction::Ptr, SubTxID>> m_Buffer;
+    io::Timer::Ptr m_FlushTimer;
 };
 
 struct TestWalletRig

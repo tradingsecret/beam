@@ -24,6 +24,8 @@ auto SwapTxObjectList::roleNames() const -> QHash<int, QByteArray>
     {
         { static_cast<int>(Roles::TimeCreated), "timeCreated" },
         { static_cast<int>(Roles::TimeCreatedSort), "timeCreatedSort" },
+        { static_cast<int>(Roles::AmountGeneralWithCurrency), "amountGeneralWithCurrency" },
+        { static_cast<int>(Roles::AmountGeneralWithCurrencySort), "amountGeneralWithCurrencySort" },
         { static_cast<int>(Roles::AmountGeneral), "amountGeneral" },
         { static_cast<int>(Roles::AmountGeneralSort), "amountGeneralSort" },
         { static_cast<int>(Roles::AddressFrom), "addressFrom" },
@@ -52,13 +54,19 @@ auto SwapTxObjectList::roleNames() const -> QHash<int, QByteArray>
         { static_cast<int>(Roles::Search), "search" },
         // atomic swap only roles
         { static_cast<int>(Roles::IsBeamSideSwap), "isBeamSideSwap" },
-        { static_cast<int>(Roles::IsProofReceived), "isProofReceived" },
+        { static_cast<int>(Roles::IsLockTxProofReceived), "isLockTxProofReceived" },
+        { static_cast<int>(Roles::IsRefundTxProofReceived), "isRefundTxProofReceived" },
+        { static_cast<int>(Roles::AmountSendWithCurrency), "amountSendWithCurrency" },
+        { static_cast<int>(Roles::AmountSendWithCurrencySort), "amountSendWithCurrencySort" },
         { static_cast<int>(Roles::AmountSend), "amountSend" },
         { static_cast<int>(Roles::AmountSendSort), "amountSendSort" },
+        { static_cast<int>(Roles::AmountReceiveWithCurrency), "amountReceiveWithCurrency" },
+        { static_cast<int>(Roles::AmountReceiveWithCurrencySort), "amountReceiveWithCurrencySort" },
         { static_cast<int>(Roles::AmountReceive), "amountReceive" },
         { static_cast<int>(Roles::AmountReceiveSort), "amountReceiveSort" },
         { static_cast<int>(Roles::Token), "token" },
         { static_cast<int>(Roles::SwapCoin), "swapCoin" },
+        { static_cast<int>(Roles::FeeRate), "feeRate" },
         { static_cast<int>(Roles::SwapCoinLockTxId), "swapCoinLockTxId" },
         { static_cast<int>(Roles::SwapCoinLockTxConfirmations), "swapCoinLockTxConfirmations" },
         { static_cast<int>(Roles::SwapCoinRedeemTxId), "swapCoinRedeemTxId" },
@@ -83,14 +91,24 @@ auto SwapTxObjectList::data(const QModelIndex &index, int role) const -> QVarian
     switch (static_cast<Roles>(role))
     {
         case Roles::TimeCreated:
-            return value->timeCreated().toString(Qt::SystemLocaleShortDate);
+        {
+            QDateTime datetime;
+            datetime.setTime_t(value->timeCreated());
+            return datetime.toString(Qt::SystemLocaleShortDate);
+        }
         case Roles::TimeCreatedSort:
-            return value->timeCreated();
+        {
+            return static_cast<qulonglong>(value->timeCreated());
+        }
 
+        case Roles::AmountGeneralWithCurrency:
+            return value->getAmountWithCurrency();
+        case Roles::AmountGeneralWithCurrencySort:
+            return static_cast<qulonglong>(value->getAmountValue());
         case Roles::AmountGeneral:
             return value->getAmount();
         case Roles::AmountGeneralSort:
-            return value->getAmountValue();
+            return static_cast<qulonglong>(value->getAmountValue());
 
         case Roles::AddressFrom:
         case Roles::AddressFromSort:
@@ -174,24 +192,42 @@ auto SwapTxObjectList::data(const QModelIndex &index, int role) const -> QVarian
         case Roles::IsBeamSideSwap:
             return value->isBeamSideSwap();
 
-        case Roles::IsProofReceived:
-            return value->isProofReceived();
+        case Roles::IsLockTxProofReceived:
+            return value->isLockTxProofReceived();
+
+        case Roles::IsRefundTxProofReceived:
+            return value->isRefundTxProofReceived();
             
+        case Roles::AmountSendWithCurrency:
+            return value->getSentAmountWithCurrency();
+        case Roles::AmountSendWithCurrencySort:
+            return value->isBeamSideSwap()
+                ? static_cast<qulonglong>(value->getSentAmountValue())
+                : static_cast<qulonglong>(value->getReceivedAmountValue());
         case Roles::AmountSend:
             return value->getSentAmount();
         case Roles::AmountSendSort:
-            return static_cast<double>(value->getSentAmountValue());
+            return static_cast<qulonglong>(value->getSentAmountValue());
 
+        case Roles::AmountReceiveWithCurrency:
+            return value->getReceivedAmountWithCurrency();
+        case Roles::AmountReceiveWithCurrencySort:
+            return value->isBeamSideSwap()
+                    ? static_cast<qulonglong>(value->getSentAmountValue())
+                    : static_cast<qulonglong>(value->getReceivedAmountValue());
         case Roles::AmountReceive:
             return value->getReceivedAmount();
         case Roles::AmountReceiveSort:
-            return static_cast<double>(value->getReceivedAmountValue());
+            return static_cast<qulonglong>(value->getReceivedAmountValue());
 
         case Roles::Token:
             return value->getToken();
 
         case Roles::SwapCoin:
             return value->getSwapCoinName();
+
+        case Roles::FeeRate:
+            return value->getFeeRate();
 
         case Roles::SwapCoinLockTxId:
             return value->getSwapCoinLockTxId();

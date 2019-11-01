@@ -300,22 +300,24 @@ namespace beam::wallet {
 
 	WalletNetworkViaBbs::~WalletNetworkViaBbs()
 	{
-        m_WalletDB->Unsubscribe(this);
-		m_Miner.Stop();
+        try 
+        {
+            m_WalletDB->Unsubscribe(this);
+		    m_Miner.Stop();
 
-		while (!m_PendingBbsMsgs.empty())
-			DeleteReq(m_PendingBbsMsgs.front());
+		    while (!m_PendingBbsMsgs.empty())
+			    DeleteReq(m_PendingBbsMsgs.front());
 
-        Unsubscribe();
-
-		try {
+            Unsubscribe();
+		
 			SaveBbsTimestamps();
 		} 
         catch (const std::exception& e)
         {
             LOG_UNHANDLED_EXCEPTION() << "what = " << e.what();
         }
-        catch (...) {
+        catch (...)
+        {
             LOG_UNHANDLED_EXCEPTION();
 		}
 	}
@@ -344,6 +346,7 @@ namespace beam::wallet {
 	{
 		m_PendingBbsMsgs.erase(BbsMsgList::s_iterator_to(r));
 		r.m_pTrg = NULL;
+        m_WalletDB->deleteWalletMessage(r.m_MessageID);
 		r.Release();
 	}
 
@@ -390,11 +393,16 @@ namespace beam::wallet {
 
     void WalletNetworkViaBbs::SendEncryptedMessage(const WalletID& peerID, const ByteBuffer& msg)
     {
+        // first store message for accidental app close
+        auto messageID = m_WalletDB->saveWalletMessage(OutgoingWalletMessage{ 0, peerID, msg });
+        
         Miner::Task::Ptr pTask = std::make_shared<Miner::Task>();
         pTask->m_Msg.m_Message = msg;
         
         pTask->m_Done = false;
         pTask->m_Msg.m_Channel = channel_from_wallet_id(peerID);
+
+        pTask->m_StoredMessageID = messageID; // store id to be able to remove if send succeeded
 
         if (m_MineOutgoing)
         {
@@ -421,7 +429,7 @@ namespace beam::wallet {
         else
         {
             pTask->m_Msg.m_TimePosted = getTimestamp();
-            OnMined(std::move(pTask->m_Msg));
+            OnMined(pTask);
         }
     }
 
@@ -458,15 +466,16 @@ namespace beam::wallet {
 			if (!pTask)
 				break;
 
-			OnMined(std::move(pTask->m_Msg));
+			OnMined(pTask);
 		}
 	}
 
-	void WalletNetworkViaBbs::OnMined(proto::BbsMsg&& msg)
+	void WalletNetworkViaBbs::OnMined(Miner::Task::Ptr task)
 	{
 		MyRequestBbsMsg::Ptr pReq(new MyRequestBbsMsg);
 
-		pReq->m_Msg = std::move(msg);
+		pReq->m_Msg = std::move(task->m_Msg);
+        pReq->m_MessageID = task->m_StoredMessageID;
 
 		m_PendingBbsMsgs.push_back(*pReq);
 		pReq->AddRef();

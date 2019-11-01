@@ -362,9 +362,33 @@ namespace beam::wallet
         if (GetParameter(TxParameterID::MyID, msg.m_From)
             && GetParameter(TxParameterID::PeerID, peerID))
         {
-            GetGateway().send_tx_params(peerID, move(msg));
+            GetGateway().send_tx_params(peerID, msg);
             return true;
         }
         return false;
+    }
+
+    void BaseTransaction::SetCompletedTxCoinStatuses(Height proofHeight)
+    {
+        std::vector<Coin> modified = GetWalletDB()->getCoinsByTx(GetTxID());
+        for (auto& coin : modified)
+        {
+            bool bIn = (coin.m_createTxId == m_ID);
+            bool bOut = (coin.m_spentTxId == m_ID);
+            if (bIn || bOut)
+            {
+                if (bIn)
+                {
+                    coin.m_confirmHeight = std::min(coin.m_confirmHeight, proofHeight);
+                    coin.m_maturity = proofHeight + Rules::get().Maturity.Std; // so far we don't use incubation for our created outputs
+                }
+                if (bOut)
+                {
+                    coin.m_spentHeight = std::min(coin.m_spentHeight, proofHeight);
+                }
+            }
+        }
+
+        GetWalletDB()->saveCoins(modified);
     }
 }

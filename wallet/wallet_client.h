@@ -97,7 +97,7 @@ namespace beam::wallet
 
         void onCoinsChanged() override;
         void onTransactionChanged(ChangeAction action, const std::vector<TxDescription>& items) override;
-        void onSystemStateChanged() override;
+        void onSystemStateChanged(const Block::SystemState::ID& stateID) override;
         void onAddressChanged(ChangeAction action, const std::vector<WalletAddress>& items) override;
         void onSyncProgress(int done, int total) override;
 
@@ -107,10 +107,10 @@ namespace beam::wallet
         void syncWithNode() override;
         void calcChange(Amount&& amount) override;
         void getWalletStatus() override;
+        void getTransactions() override;
         void getUtxosStatus() override;
         void getAddresses(bool own) override;
 #ifdef BEAM_ATOMIC_SWAP_SUPPORT
-        void setSwapOffersCoinType(AtomicSwapCoin type) override;
         void getSwapOffers() override;
         void publishSwapOffer(const SwapOffer& offer) override;
 #endif

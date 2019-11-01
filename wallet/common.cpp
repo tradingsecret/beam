@@ -56,11 +56,33 @@ namespace std
         switch (value)
         {
         case beam::wallet::AtomicSwapCoin::Bitcoin:
-            return "btc";
+            return "BTC";
         case beam::wallet::AtomicSwapCoin::Litecoin:
-            return "ltc";
+            return "LTC";
         case beam::wallet::AtomicSwapCoin::Qtum:
-            return "qtum";
+            return "QTUM";
+        default:
+            return "";
+        }
+    }
+
+    string to_string(beam::wallet::SwapOfferStatus status)
+    {
+        switch (status)
+        {
+        case beam::wallet::SwapOfferStatus::Pending:
+            return "Pending";
+        case beam::wallet::SwapOfferStatus::InProgress:
+            return "InProgress";
+        case beam::wallet::SwapOfferStatus::Completed:
+            return "Completed";
+        case beam::wallet::SwapOfferStatus::Canceled:
+            return "Canceled";
+        case beam::wallet::SwapOfferStatus::Expired:
+            return "Expired";
+        case beam::wallet::SwapOfferStatus::Failed:
+            return "Failed";
+
         default:
             return "";
         }
@@ -404,6 +426,7 @@ namespace beam::wallet
 
     void SwapOffer::SetTxParameters(const PackedTxParameters& parameters)
     {
+        // Do not forget to set other SwapOffer members also!
         SubTxID subTxID = kDefaultSubTxID;
         Deserializer d;
         for (const auto& p : parameters)
@@ -428,6 +451,7 @@ namespace beam::wallet
         if (m_TxID) result.m_txId = *m_TxID;
         if (m_status) result.m_status = *m_status;
         if (m_publisherId) result.m_publisherId = *m_publisherId;
+        if (m_coin) result.m_coin = *m_coin;
         return result;
     }
 

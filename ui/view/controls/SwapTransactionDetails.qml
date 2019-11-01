@@ -10,22 +10,28 @@ RowLayout {
 
     property var    swapCoinName
 
+    property var    txId
+    property var    fee
+    property var    feeRate
+    property var    comment
     property var    swapCoinLockTxId
     property var    swapCoinLockTxConfirmations
     property var    beamLockTxKernelId
+    property var    failureReason
 
     property bool   isBeamSide
-    property bool   isProofReceived    // KernelProofHeight != null
+    property bool   isLockTxProofReceived    // KernelProofHeight != null
+    property bool   isRefundTxProofReceived
 
-    // isBeamSide || (!isBeamSide && isProofReceived)
+    // isBeamSide || (!isBeamSide && isLockTxProofReceived)
     property var    beamRedeemTxKernelId
-    // isBeamSide && isProofReceived
+    // isBeamSide && isLockTxProofReceived
     property var    swapCoinRedeemTxId
     property var    swapCoinRedeemTxConfirmations
-    // isBeamSide && !isProofReceived
-    property var    beamRefundTxKernelId
 
-    // !isBeamSide && !isProofReceived
+    // isBeamSide && isRefundTxProofReceived
+    property var    beamRefundTxKernelId
+    // !isBeamSide && swapCoinRefundTxConfirmations > 0
     property var    swapCoinRefundTxId
     property var    swapCoinRefundTxConfirmations
 
@@ -42,8 +48,87 @@ RowLayout {
         columnSpacing: 44
         rowSpacing: 14
         columns: 2
+
+        SFText {
+            Layout.alignment: Qt.AlignTop
+            font.pixelSize: 14
+            color: Style.content_secondary
+            //% "Transaction ID"
+            text: qsTrId("swap-details-tx-id") + ":"
+        }
+        SFLabel {
+            Layout.fillWidth: true
+            copyMenuEnabled: true
+            font.pixelSize: 14
+            color: Style.content_main
+            //wrapMode: Text.Wrap
+            elide: Text.ElideMiddle
+            text: root.txId
+            onCopyText: textCopied(text)
+        }
         
         SFText {
+            enabled: commentLabel.enabled
+            visible: enabled
+            Layout.alignment: Qt.AlignTop
+            font.pixelSize: 14
+            color: Style.content_secondary
+            //% "Comment"
+            text: qsTrId("swap-details-tx-comment") + ":"
+        }
+        SFLabel {
+            id: commentLabel
+            enabled: text != ""
+            visible: enabled
+            Layout.fillWidth: true
+            copyMenuEnabled: true
+            font.pixelSize: 14
+            color: Style.content_main
+            //wrapMode: Text.Wrap
+            elide: Text.ElideMiddle
+            text: root.comment
+            onCopyText: textCopied(text)
+        }
+
+        SFText {
+            Layout.alignment: Qt.AlignTop
+            font.pixelSize: 14
+            color: Style.content_secondary
+            //% "Transaction fee"
+            text: qsTrId("swap-details-tx-fee") + ":"
+        }
+        SFLabel {
+            Layout.fillWidth: true
+            copyMenuEnabled: true
+            font.pixelSize: 14
+            color: Style.content_main
+            //wrapMode: Text.Wrap
+            elide: Text.ElideMiddle
+            text: root.fee
+            onCopyText: textCopied(text)
+        }
+
+        SFText {
+            Layout.alignment: Qt.AlignTop
+            font.pixelSize: 14
+            color: Style.content_secondary
+            //% "Transaction fee rate"
+            text: qsTrId("swap-details-tx-fee-rate") + ":"
+        }
+        SFLabel {
+            Layout.fillWidth: true
+            copyMenuEnabled: true
+            font.pixelSize: 14
+            color: Style.content_main
+            //wrapMode: Text.Wrap
+            elide: Text.ElideMiddle
+            text: root.feeRate
+            onCopyText: textCopied(text)
+        }
+        
+        SFText {
+            enabled: swapCoinLockTxIdLabel.enabled
+            visible: enabled
             Layout.alignment: Qt.AlignTop
             font.pixelSize: 14
             color: Style.content_secondary
@@ -51,6 +136,9 @@ RowLayout {
             text: swapCoinName.toUpperCase() + ' ' + qsTrId("swap-details-lock-tx-id") + ":"
         }
         SFLabel {
+            id: swapCoinLockTxIdLabel
+            enabled: text != ""
+            visible: enabled
             Layout.fillWidth: true
             copyMenuEnabled: true
             font.pixelSize: 14
@@ -62,6 +150,8 @@ RowLayout {
         }
 
         SFText {
+            enabled: swapCoinLockTxConfirmationsLabel.enabled
+            visible: enabled
             Layout.alignment: Qt.AlignTop
             font.pixelSize: 14
             color: Style.content_secondary
@@ -69,6 +159,9 @@ RowLayout {
             text: swapCoinName.toUpperCase() + ' ' + qsTrId("swap-details-lock-tx-conf") + ":"
         }
         SFLabel {
+            id: swapCoinLockTxConfirmationsLabel
+            enabled: (text != "") && isBeamSide
+            visible: enabled
             Layout.fillWidth: true
             copyMenuEnabled: true
             font.pixelSize: 14
@@ -80,6 +173,8 @@ RowLayout {
         }
         
         SFText {
+            enabled: beamLockTxKernelIdLabel.enabled
+            visible: enabled
             Layout.alignment: Qt.AlignTop
             font.pixelSize: 14
             color: Style.content_secondary
@@ -87,6 +182,9 @@ RowLayout {
             text: qsTrId("swap-details-beam-lock-kernel-id") + ":"
         }
         SFLabel {
+            id: beamLockTxKernelIdLabel
+            enabled: text != ""
+            visible: enabled
             Layout.fillWidth: true
             copyMenuEnabled: true
             font.pixelSize: 14
@@ -98,7 +196,7 @@ RowLayout {
         }
         
         SFText {
-            enabled: isBeamSide || (!isBeamSide && isProofReceived)
+            enabled: beamRedeemTxKernelIdLabel.enabled
             visible: enabled
             Layout.alignment: Qt.AlignTop
             font.pixelSize: 14
@@ -107,7 +205,8 @@ RowLayout {
             text: qsTrId("swap-details-beam-redeem-kernel-id") + ":"
         }
         SFLabel {
-            enabled: isBeamSide || (!isBeamSide && isProofReceived)
+            id: beamRedeemTxKernelIdLabel
+            enabled: (text != "") && (isBeamSide || (!isBeamSide && isLockTxProofReceived))
             visible: enabled
             Layout.fillWidth: true
             copyMenuEnabled: true
@@ -120,7 +219,7 @@ RowLayout {
         }
 
         SFText {
-            enabled: isBeamSide && isProofReceived
+            enabled: swapCoinRedeemTxIdLabel.enabled
             visible: enabled
             Layout.alignment: Qt.AlignTop
             font.pixelSize: 14
@@ -129,7 +228,8 @@ RowLayout {
             text: swapCoinName.toUpperCase() + ' ' + qsTrId("swap-details-redeem-tx-id") + ":"
         }
         SFLabel {
-            enabled: isBeamSide && isProofReceived
+            id: swapCoinRedeemTxIdLabel
+            enabled: (text != "") && isBeamSide && isLockTxProofReceived
             visible: enabled
             Layout.fillWidth: true
             copyMenuEnabled: true
@@ -142,7 +242,7 @@ RowLayout {
         }
 
         SFText {
-            enabled: isBeamSide && isProofReceived
+            enabled: swapCoinRedeemTxConfirmationsLabel.enabled
             visible: enabled
             Layout.alignment: Qt.AlignTop
             font.pixelSize: 14
@@ -151,7 +251,8 @@ RowLayout {
             text: swapCoinName.toUpperCase() + ' ' + qsTrId("swap-details-redeem-tx-conf") + ":"
         }
         SFLabel {
-            enabled: isBeamSide && isProofReceived
+            id: swapCoinRedeemTxConfirmationsLabel
+            enabled: (text != "") && isBeamSide && isLockTxProofReceived
             visible: enabled
             Layout.fillWidth: true
             copyMenuEnabled: true
@@ -164,7 +265,7 @@ RowLayout {
         }
         
         SFText {
-            enabled: isBeamSide && !isProofReceived
+            enabled: beamRefundTxKernelIdLabel.enabled
             visible: enabled
             Layout.alignment: Qt.AlignTop
             font.pixelSize: 14
@@ -173,7 +274,8 @@ RowLayout {
             text: qsTrId("swap-details-beam-refund-kernel-id") + ":"
         }
         SFLabel {
-            enabled: isBeamSide && !isProofReceived
+            id: beamRefundTxKernelIdLabel
+            enabled: (text != "") && isBeamSide && isRefundTxProofReceived
             visible: enabled
             Layout.fillWidth: true
             copyMenuEnabled: true
@@ -186,7 +288,7 @@ RowLayout {
         }
 
         SFText {
-            enabled: !isBeamSide && !isProofReceived
+            enabled: swapCoinRefundTxIdLabel.enabled
             visible: enabled
             Layout.alignment: Qt.AlignTop
             font.pixelSize: 14
@@ -195,7 +297,8 @@ RowLayout {
             text: swapCoinName.toUpperCase() + ' ' + qsTrId("swap-details-refund-tx-id") + ":"
         }
         SFLabel {
-            enabled: !isBeamSide && !isProofReceived
+            id: swapCoinRefundTxIdLabel
+            enabled: (text != "") && swapCoinRefundTxConfirmationsLabel.enabled
             visible: enabled
             Layout.fillWidth: true
             copyMenuEnabled: true
@@ -208,7 +311,7 @@ RowLayout {
         }
 
         SFText {
-            enabled: !isBeamSide && !isProofReceived
+            enabled: swapCoinRefundTxConfirmationsLabel.enabled
             visible: enabled
             Layout.alignment: Qt.AlignTop
             font.pixelSize: 14
@@ -217,7 +320,8 @@ RowLayout {
             text: swapCoinName.toUpperCase() + ' ' + qsTrId("swap-details-refund-tx-conf") + ":"
         }
         SFLabel {
-            enabled: !isBeamSide && !isProofReceived
+            id: swapCoinRefundTxConfirmationsLabel
+            enabled: (text != "") && (text != "0") && !isBeamSide // exist at least 1 confirmation
             visible: enabled
             Layout.fillWidth: true
             copyMenuEnabled: true
@@ -229,6 +333,28 @@ RowLayout {
             onCopyText: textCopied(text)
         }
         
+        SFText {
+            enabled: failureReasonLabel.enabled
+            visible: enabled
+            Layout.alignment: Qt.AlignTop
+            font.pixelSize: 14
+            color: Style.content_secondary
+            //% "Error"
+            text: qsTrId("swap-details-failure-reason") + ":"
+        }
+        SFLabel {
+            id: failureReasonLabel
+            enabled: text != ""
+            visible: enabled
+            Layout.fillWidth: true
+            copyMenuEnabled: true
+            font.pixelSize: 14
+            color: Style.content_main
+            // wrapMode: Text.Wrap
+            elide: Text.ElideMiddle
+            text: root.failureReason
+            onCopyText: textCopied(text)
+        }
 
         function canOpenInBlockchainExplorer(status) {
             switch(status) {
