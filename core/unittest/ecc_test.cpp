@@ -178,6 +178,14 @@ void SetRandom(Point::Native& value, uint8_t y = 0)
     }
 }
 
+void SetRandom(Key::IKdf::Ptr& pPtr)
+{
+	uintBig hv;
+	SetRandom(hv);
+	ECC::HKdf::Create(pPtr, hv);
+}
+
+
 template <typename T>
 void SetRandomOrd(T& x, bool is_trezor_debug = false)
 {
@@ -972,12 +980,8 @@ void TestMultiSigOutput()
 
     beam::Key::IKdf::Ptr pKdf_A;
     beam::Key::IKdf::Ptr pKdf_B;
-    uintBig secretB;
-    uintBig secretA;
-    SetRandom(secretA);
-    SetRandom(secretB);
-    ECC::HKdf::Create(pKdf_B, secretB);
-    ECC::HKdf::Create(pKdf_A, secretA);
+    SetRandom(pKdf_B);
+    SetRandom(pKdf_A);
     // need only for last side - proof creator
     RangeProof::CreatorParams creatorParamsB;
     SetRandomOrd(creatorParamsB.m_Kidv.m_Idx);
@@ -1841,17 +1845,8 @@ void TestAES()
 	verify_test(!memcmp(pBuf, pPlaintext, sizeof(pPlaintext)));
 }
 
-void TestKdf()
+void TestKdfPair(Key::IKdf& skdf, Key::IPKdf& pkdf)
 {
-	HKdf skdf;
-	HKdfPub pkdf;
-
-	uintBig seed;
-	SetRandom(seed);
-
-	skdf.Generate(seed);
-	pkdf.GenerateFrom(skdf);
-
 	for (uint32_t i = 0; i < 10; i++)
 	{
 		Hash::Value hv;
@@ -1878,6 +1873,20 @@ void TestKdf()
 		pk0 += pk1;
 		verify_test(pk0 == Zero);
 	}
+}
+
+void TestKdf()
+{
+	HKdf skdf;
+	HKdfPub pkdf;
+
+	uintBig seed;
+	SetRandom(seed);
+
+	skdf.Generate(seed);
+	pkdf.GenerateFrom(skdf);
+
+	TestKdfPair(skdf, pkdf);
 
 	const std::string sPass("test password");
 
@@ -1901,6 +1910,16 @@ void TestKdf()
 	seed.Inc();
 	skdf2.Generate(seed);
 	verify_test(!skdf2.IsSame(skdf));
+
+	// parallel key generation
+	SetRandom(seed);
+
+	skdf2.GenerateChildParallel(skdf, seed);
+
+	pkdf.GenerateFrom(skdf);
+	pkdf2.GenerateChildParallel(pkdf, seed);
+
+	TestKdfPair(skdf2, pkdf2);
 }
 
 void TestBbs()
@@ -2193,41 +2212,6 @@ void TestLelantus()
 	pt += Context::get().J * ser;
 	pt.Export(lst.m_vec[p.m_Witness.V.m_L]);
 
-	{
-		// test 2-blinded bulletproof
-		RangeProof::Confidential bp;
-		RangeProof::Confidential::Part3 bpExtra;
-
-		RangeProof::CreatorParams cp;
-		ZeroObject(cp.m_Kidv);
-		cp.m_Kidv.m_Value = p.m_Witness.V.m_V;
-		cp.m_Seed.V = 32134U;
-
-		{
-			Oracle o;
-			bp.Create(p.m_Witness.V.m_R, cp, o, nullptr, &bpExtra, &ser);
-		}
-
-		{
-			Oracle o;
-			verify_test(bp.IsValid(pt, o, nullptr, &bpExtra));
-		}
-
-		{
-			Oracle o;
-			verify_test(bp.Recover(o, cp));
-		}
-	}
-
-	{
-		// test kernel with serial
-		beam::TxKernel krn;
-		krn.Sign(p.m_Witness.V.m_R, ser);
-
-		beam::AmountBig::Type fee;
-		verify_test(krn.IsValid(g_hFork, fee, pt));
-	}
-
 	Oracle oracle;
 
 	uint32_t t = beam::GetTime_ms();
@@ -2283,6 +2267,42 @@ void TestLelantus()
 	}
 
 	verify_test(bSuccess);
+}
+
+void TestLelantusKeys()
+{
+	// Test encoding and recognition
+	Key::IKdf::Ptr pGen, pSer;
+	SetRandom(pGen);
+	SetRandom(pSer);
+
+	beam::Output::Shielded::PublicGen gen;
+	gen.m_pGen = pGen;
+	gen.m_pSer = pSer;
+	SetRandom(gen.m_Owner);
+
+	beam::Output::Shielded::Viewer viewer;
+	viewer.m_pGen = pGen;
+	viewer.m_pSer = pSer;
+
+	beam::Output::Shielded::Data d1;
+	d1.m_hScheme = beam::Rules::get().pForks[2].m_Height;
+	d1.m_Value = 115;
+
+	Hash::Value nonce;
+	SetRandom(nonce);
+
+	beam::Output outp;
+	d1.Generate(outp, gen, nonce);
+
+	ECC::Point::Native pt;
+	verify_test(pt.Import(outp.m_Commitment));
+	verify_test(outp.IsValid(d1.m_hScheme, pt));
+
+	beam::Output::Shielded::Data d2;
+	d2.m_hScheme = d1.m_hScheme;
+	verify_test(d2.Recover(outp, viewer));
+
 }
 
 void TestTxKernel()
@@ -2380,6 +2400,7 @@ void TestAll()
 	TestFourCC();
 	TestTreasury();
 	TestLelantus();
+	TestLelantusKeys();
 }
 
 

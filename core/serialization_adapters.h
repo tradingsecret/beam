@@ -734,12 +734,48 @@ namespace detail
 			return ar;
 		}
 
+		/// beam::Output::Shielded serialization
+		template<typename Archive>
+		static Archive& save(Archive& ar, const beam::Output::Shielded& x)
+		{
+			uint8_t nFlags =
+				(x.m_SerialPub.m_Y ? 1 : 0) |
+				(x.m_Signature.m_NoncePub.m_Y ? 2 : 0);
+
+			ar
+				& nFlags
+				& x.m_SerialPub.m_X
+				& x.m_Signature.m_NoncePub.m_X
+				& x.m_Signature.m_k
+				& x.m_kSer;
+
+			return ar;
+		}
+
+		template<typename Archive>
+		static Archive& load(Archive& ar, beam::Output::Shielded& x)
+		{
+			uint8_t nFlags;
+
+			ar
+				& nFlags
+				& x.m_SerialPub.m_X
+				& x.m_Signature.m_NoncePub.m_X
+				& x.m_Signature.m_k
+				& x.m_kSer;
+
+			x.m_SerialPub.m_Y = (1 & nFlags);
+			x.m_Signature.m_NoncePub.m_Y = 0 != (2 & nFlags);
+
+			return ar;
+		}
+
         /// beam::Output serialization
         template<typename Archive>
         static Archive& save(Archive& ar, const beam::Output& output)
         {
 			uint8_t nFlags2 =
-				(output.m_pDoubleBlind ? 1 : 0);
+				(output.m_pShielded ? 1 : 0);
 
 			uint8_t nFlags =
 				(output.m_Commitment.m_Y ? 1 : 0) |
@@ -772,7 +808,7 @@ namespace detail
 				ar & nFlags2;
 
 				if ((1 & nFlags2) && !output.m_RecoveryOnly)
-					ar & *output.m_pDoubleBlind;
+					ar & *output.m_pShielded;
 			}
 
             return ar;
@@ -817,11 +853,11 @@ namespace detail
 
 				if (1 & nFlags2)
 				{
-					output.m_pDoubleBlind = std::make_unique<ECC::RangeProof::Confidential::Part3>();
+					output.m_pShielded = std::make_unique<beam::Output::Shielded>();
 					if (output.m_RecoveryOnly)
-						ZeroObject(*output.m_pDoubleBlind);
+						ZeroObject(*output.m_pShielded);
 					else
-						ar & *output.m_pDoubleBlind;
+						ar & *output.m_pShielded;
 				}
 			}
 
@@ -879,8 +915,7 @@ namespace detail
 			uint8_t nFlags2 =
 				(val.m_AssetEmission ? 1 : 0) |
 				(val.m_pRelativeLock ? 2 : 0) |
-				(val.m_CanEmbed ? 4 : 0) |
-				(val.m_pSerial ? 8 : 0);
+				(val.m_CanEmbed ? 4 : 0);
 
 			uint8_t nFlags =
 				(val.m_Commitment.m_Y ? 1 : 0) |
@@ -928,9 +963,6 @@ namespace detail
 
 				if (2 & nFlags2)
 					ar & *val.m_pRelativeLock;
-
-				if (8 & nFlags2)
-					ar & *val.m_pSerial;
 			}
             return ar;
         }
@@ -1004,12 +1036,6 @@ namespace detail
 				{
 					val.m_pRelativeLock.reset(new beam::TxKernel::RelativeLock);
 					ar & *val.m_pRelativeLock;
-				}
-
-				if (8 & nFlags2)
-				{
-					val.m_pSerial.reset(new ECC::Scalar);
-					ar & *val.m_pSerial;
 				}
 
 				if (4 & nFlags2)

@@ -713,6 +713,8 @@ namespace ECC
 
 		void GenerateChild(Key::IKdf&, Key::Index iKdf);
 		static void CreateChild(Ptr&, Key::IKdf&, Key::Index iKdf);
+
+		void GenerateChildParallel(Key::IKdf&, const Hash::Value&); // generate a subkey compatible with the appropriate HKdfPub
 	};
 
 	class HKdfPub
@@ -747,6 +749,8 @@ namespace ECC
 		bool Import(const Packed&);
 
 		void GenerateFrom(const HKdf&);
+
+		void GenerateChildParallel(Key::IPKdf&, const Hash::Value&); // generate a subkey compatible with the appropriate HKdfPub
 	};
 
 	struct Context
@@ -891,5 +895,19 @@ namespace ECC
 
 		void operator >> (Scalar::Native&);
 		void operator >> (Hash::Value&);
+	};
+
+	struct RangeProof::Confidential::Nonces
+	{
+		Scalar::Native m_tau1;
+		Scalar::Native m_tau2;
+
+		Nonces() {}
+		Nonces(const uintBig& seedSk) { Init(seedSk); }
+
+		void Init(const uintBig& seedSk);
+
+		void AddInfo1(Point::Native& ptT1, Point::Native& ptT2) const;
+		void AddInfo2(Scalar::Native& taux, const Scalar::Native& sk, const ChallengeSet1&) const;
 	};
 }

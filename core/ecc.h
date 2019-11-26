@@ -170,6 +170,7 @@ namespace ECC
 		int cmp(const Signature&) const;
 		COMPARISON_VIA_CMP
 
+		void get_Challenge(Scalar::Native&, const Hash::Value& msg) const;
 	private:
 		static void get_Challenge(Scalar::Native&, const Point&, const Hash::Value& msg);
 	};
@@ -426,14 +427,16 @@ namespace ECC
 			//		In case of multi-sig it should be specified explicitly by the caller (the resulting nonce must be the same for multiple invocations).
 			//			Means - the caller must take care of constructing the nonce, which has external randomness
 
-			void Create(const Scalar::Native& sk, const CreatorParams&, Oracle&, const Point::Native* pHGen = nullptr, Part3* pSer = nullptr, const Scalar::Native* pSkSer = nullptr); // single-pass
-			bool IsValid(const Point::Native&, Oracle&, const Point::Native* pHGen = nullptr, Part3* pSer = nullptr) const;
-			bool IsValid(const Point::Native&, Oracle&, InnerProduct::BatchContext&, const Point::Native* pHGen = nullptr, Part3* pSer = nullptr) const;
+			void Create(const Scalar::Native& sk, const CreatorParams&, Oracle&, const Point::Native* pHGen = nullptr); // single-pass
+			bool IsValid(const Point::Native&, Oracle&, const Point::Native* pHGen = nullptr) const;
+			bool IsValid(const Point::Native&, Oracle&, InnerProduct::BatchContext&, const Point::Native* pHGen = nullptr) const;
 
 			bool Recover(Oracle&, CreatorParams&) const;
 
 			int cmp(const Confidential&) const;
 			COMPARISON_VIA_CMP
+
+			struct Nonces;
 
 			// multisig
 			struct MultiSig
@@ -441,10 +444,8 @@ namespace ECC
 				Part1 m_Part1;
 				Part2 m_Part2;
 
-				struct Impl;
-
-				static bool CoSignPart(const uintBig& seedSk, Part2&);
-				void CoSignPart(const uintBig& seedSk, const Scalar::Native& sk, Oracle&, Part3&) const;
+				static bool CoSignPart(const Nonces&, Part2&);
+				void CoSignPart(const Nonces&, const Scalar::Native& sk, Oracle&, Part3&) const;
 			};
 
 			struct Phase {
@@ -456,7 +457,7 @@ namespace ECC
 				};
 			};
 
-			bool CoSign(const uintBig& seedSk, const Scalar::Native& sk, const CreatorParams&, Oracle&, Phase::Enum, const Point::Native* pHGen = nullptr, Part3* pSer = nullptr, const Scalar::Native* pSkSer = nullptr);
+			bool CoSign(const Nonces&, const Scalar::Native& sk, const CreatorParams&, Oracle&, Phase::Enum, const Point::Native* pHGen = nullptr);
 
             static void GenerateSeed(uintBig& seedSk, const Scalar::Native& sk, Amount amount, Oracle& oracle);
 

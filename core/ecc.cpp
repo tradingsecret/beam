@@ -1383,6 +1383,7 @@ namespace ECC {
 		NoLeak<secp256k1_ge> ge;
 		NoLeak<Point::Compact> ge_s;
 		secp256k1_fe zDenom;
+		bool bDenomSet = false;
 
 		WnafBase::Shared wsP, wsC;
 
@@ -1410,13 +1411,24 @@ namespace ECC {
 
 				Point::Native& pt = f.m_pPt[0];
 				if (pt == Zero)
+				{
+					f.m_nNeeded = 0;
 					continue;
+				}
 
 				unsigned int nEntries = f.m_Wnaf.Init(wsC, m_pKCasual[iEntry], iEntry + 1);
 				assert(nEntries <= _countof(f.m_Wnaf.m_pVals));
 
 				if (Reuse::UseGenerated == m_ReuseFlag)
+				{
+					if (!bDenomSet)
+					{
+						bDenomSet = true;
+						zDenom = pt.get_Raw().z;
+					}
+
 					continue;
+				}
 
 				if (Reuse::Generate == m_ReuseFlag)
 					f.m_nNeeded = Casual::Fast::nCount; // all
@@ -1449,9 +1461,7 @@ namespace ECC {
 
 			if (Reuse::UseGenerated == m_ReuseFlag)
 			{
-				if (m_Casual)
-					zDenom = m_pCasual[0].U.F.get().m_pPt[0].get_Raw().z;
-				else
+				if (!bDenomSet)
 					secp256k1_fe_set_int(&zDenom, 1);
 			}
 			else
@@ -1972,6 +1982,18 @@ namespace ECC {
 		Generate(sk_.V.m_Value);
 	}
 
+	void HKdf::GenerateChildParallel(Key::IKdf& kdf, const Hash::Value& hv)
+	{
+		Scalar::Native sk;
+		kdf.DerivePKey(sk, hv);
+
+		NoLeak<Scalar> sk_;
+		sk_.V = sk;
+		Generate(sk_.V.m_Value);
+
+		m_kCoFactor *= sk;
+	}
+
 	void HKdf::CreateChild(Ptr& pRes, Key::IKdf& kdf, Key::Index iKdf)
 	{
 		std::shared_ptr<HKdf> pVal = std::make_shared<HKdf>();
@@ -2065,6 +2087,22 @@ namespace ECC {
 		m_PkJ = Context::get().J * v.m_kCoFactor;
 	}
 
+	void HKdfPub::GenerateChildParallel(Key::IPKdf& kdf, const Hash::Value& hv)
+	{
+		Scalar::Native sk;
+		kdf.DerivePKey(sk, hv);
+
+		NoLeak<Scalar> sk_;
+		sk_.V = sk;
+
+		HKdf hkdf;
+		hkdf.Generate(sk_.V.m_Value);
+		GenerateFrom(hkdf);
+
+		m_PkG = m_PkG * sk;
+		m_PkJ = m_PkJ * sk;
+	}
+
 	/////////////////////
 	// Oracle
 	void Oracle::Reset()
@@ -2092,6 +2130,11 @@ namespace ECC {
 	void Signature::get_Challenge(Scalar::Native& out, const Point& pt, const Hash::Value& msg)
 	{
 		Oracle() << pt << msg >> out;
+	}
+
+	void Signature::get_Challenge(Scalar::Native& out, const Hash::Value& msg) const
+	{
+		get_Challenge(out, m_NoncePub, msg);
 	}
 
 	void Signature::MultiSig::SignPartial(Scalar::Native& k, const Hash::Value& msg, const Scalar::Native& sk) const
@@ -2130,7 +2173,7 @@ namespace ECC {
 		Mode::Scope scope(Mode::Fast);
 
 		Scalar::Native e;
-		get_Challenge(e, m_NoncePub, msg);
+		get_Challenge(e, msg);
 
 		InnerProduct::BatchContext* pBc = InnerProduct::BatchContext::s_pInstance;
 		if (pBc)
