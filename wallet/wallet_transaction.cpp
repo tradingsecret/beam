@@ -16,6 +16,7 @@
 #include "base_tx_builder.h"
 #include "wallet.h"
 #include "core/block_crypt.h"
+#include "strings_resources.h"
 
 #include <numeric>
 #include "utility/logger.h"
@@ -63,13 +64,13 @@ namespace beam::wallet
         auto receiverAddr = m_WalletDB->getAddress(*peerID);
         if (receiverAddr)
         {
-            if (receiverAddr->m_OwnID && receiverAddr->isExpired())
+            if (receiverAddr->isOwn() && receiverAddr->isExpired())
             {
                 LOG_INFO() << "Can't send to the expired address.";
                 throw AddressExpiredException();
             }
             TxParameters temp{ parameters };
-            temp.SetParameter(TxParameterID::IsSelfTx, receiverAddr->m_OwnID != 0);
+            temp.SetParameter(TxParameterID::IsSelfTx, receiverAddr->isOwn());
             return temp;
         }
         else
@@ -140,9 +141,12 @@ namespace beam::wallet
 
             if (!builder.GetInitialTxParams() && txState == State::Initial)
             {
+                const auto isAsset = builder.GetAssetId() != Zero;
                 LOG_INFO() << GetTxID() << (isSender ? " Sending " : " Receiving ")
-                    << PrintableAmount(builder.GetAmount())
+                    << PrintableAmount(builder.GetAmount(), false,isAsset ? kAmountASSET : "", isAsset ? kAmountAGROTH : "")
                     << " (fee: " << PrintableAmount(builder.GetFee()) << ")";
+
+                UpdateTxDescription(TxStatus::InProgress);
 
                 if (isSender)
                 {
@@ -161,11 +165,16 @@ namespace beam::wallet
                     // create receiver utxo
                     for (const auto& amount : builder.GetAmountList())
                     {
-                        builder.GenerateNewCoin(amount, false);
+                        if (builder.GetAssetId() != Zero)
+                        {
+                            builder.GenerateAssetCoin(amount, false);
+                        }
+                        else
+                        {
+                            builder.GenerateBeamCoin(amount, false);
+                        }
                     }
                 }
-
-                UpdateTxDescription(TxStatus::InProgress);
 
                 builder.GenerateOffset();
             }
@@ -187,7 +196,7 @@ namespace beam::wallet
                 if (GetParameter(TxParameterID::MyID, wid))
                 {
                     auto waddr = m_WalletDB->getAddress(wid);
-                    if (waddr && waddr->m_OwnID)
+                    if (waddr && waddr->isOwn())
                         SetParameter(TxParameterID::MyAddressID, waddr->m_OwnID);
                 }
             }
@@ -374,7 +383,8 @@ namespace beam::wallet
             .AddParameter(TxParameterID::IsSender, !isSender)
             .AddParameter(TxParameterID::PeerProtoVersion, s_ProtoVersion)
             .AddParameter(TxParameterID::PeerPublicExcess, builder.GetPublicExcess())
-            .AddParameter(TxParameterID::PeerPublicNonce, builder.GetPublicNonce());
+            .AddParameter(TxParameterID::PeerPublicNonce, builder.GetPublicNonce())
+            .AddParameter(TxParameterID::AssetID, builder.GetAssetId());
 
         if (!SendTxParameters(move(msg)))
         {
@@ -415,7 +425,7 @@ namespace beam::wallet
                 pc.m_Sender = widPeer.m_Pk;
 
                 auto waddr = m_WalletDB->getAddress(widMy);
-                if (waddr && waddr->m_OwnID)
+                if (waddr && waddr->isOwn())
                 {
                     Scalar::Native sk;
                     
@@ -464,7 +474,7 @@ namespace beam::wallet
     {
         WalletID peerID = GetMandatoryParameter<WalletID>(TxParameterID::PeerID);
         auto address = m_WalletDB->getAddress(peerID);
-        return address.is_initialized() && address->m_OwnID;
+        return address.is_initialized() && address->isOwn();
     }
 
     SimpleTransaction::State SimpleTransaction::GetState() const
@@ -488,10 +498,10 @@ namespace beam::wallet
         case TxParameterID::Status:
         case TxParameterID::TransactionType:
         case TxParameterID::KernelID:
+        case TxParameterID::AssetID:
             return true;
         default:
             return false;
         }
     }
-
 }

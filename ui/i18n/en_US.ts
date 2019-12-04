@@ -1207,12 +1207,12 @@ or send this address to the sender over secure channel</translation>
         <translation>Fee is too small</translation>
     </message>
     <message id="loading-view-estimate-minutes">
-        <source>min.</source>
-        <translation>min.</translation>
+        <source>min</source>
+        <translation>min</translation>
     </message>
     <message id="loading-view-estimate-seconds">
-        <source>sec.</source>
-        <translation>sec.</translation>
+        <source>sec</source>
+        <translation>sec</translation>
     </message>
     <message id="loading-view-estimate-time">
         <source>Estimate time: %s</source>
@@ -1383,8 +1383,8 @@ please review your settings and try again</translation>
         <translation>Rebuilding wallet data</translation>
     </message>
     <message id="loading-view-estimate-hours">
-        <source>h.</source>
-        <translation>h.</translation>
+        <source>h</source>
+        <translation>h</translation>
     </message>
     <message id="loading-view-net-problems">
         <source>It may take longer then usual. Please, check your network.</source>
@@ -1874,7 +1874,9 @@ Please check the swap token and try again.</translation>
     </message>
     <message id="send-swap-sconfirmation-online-time">
         <source>Keep your wallet online. The swap normally takes about 1 hour to complete.</source>
-        <translation>Keep your wallet online. The swap normally takes about 1 hour
+        <oldsource>Keep your wallet online. The swap normally takes about 1 hour
+to complete.</oldsource>
+        <translation type="unfinished">Keep your wallet online. The swap normally takes about 1 hour
 to complete.</translation>
     </message>
     <message id="beam-transaction-fee">
@@ -1940,6 +1942,11 @@ to complete.</translation>
     </message>
     <message id="app-close-text">
         <source>There are %1 active transactions that might fail if the wallet will go offline. Are you sure to close the wallet now?</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message id="wallet-export-tx-history">
+        <source>Export transactions history</source>
+        <extracomment>transactions history screen, export button tooltip and open file dialog</extracomment>
         <translation type="unfinished"></translation>
     </message>
 </context>

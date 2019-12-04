@@ -105,12 +105,12 @@ namespace std
         {
             if (amount.m_value >= Rules::Coin)
             {
-                ss << Amount(amount.m_value / Rules::Coin) << " beams ";
+                ss << Amount(amount.m_value / Rules::Coin) << " " << (amount.m_coinName.empty() ? "beams" : amount.m_coinName);
             }
             Amount c = amount.m_value % Rules::Coin;
             if (c > 0 || amount.m_value == 0)
             {
-                ss << c << " groth ";
+                ss << (amount.m_value >= Rules::Coin ? (" ") : "") << c << " " << (amount.m_grothName.empty() ? "groth" : amount.m_grothName);
             }
             return ss.str();
         }
@@ -125,7 +125,7 @@ namespace std
         s.swap_buf(buffer);
         return beam::wallet::EncodeToBase58(buffer);
     }
-}
+}  // namespace std
 
 namespace beam
 {
@@ -143,7 +143,7 @@ namespace beam
         
         return os;
     }
-}
+}  // namespace beam
 
 namespace beam::wallet
 {
@@ -520,4 +520,14 @@ namespace beam::wallet
         assert(false && "Unknown TX status!");
         return "unknown";
     }
-}
+
+    uint64_t get_RandomID()
+    {
+        uintBigFor<uint64_t>::Type val;
+        ECC::GenRandom(val);
+
+        uint64_t ret;
+        val.Export(ret);
+        return ret;
+    }
+}  // namespace beam::wallet

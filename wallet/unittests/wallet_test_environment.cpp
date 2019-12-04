@@ -64,12 +64,13 @@ public:
         return m_pKdf;
     }
 
-    std::vector<Coin> selectCoins(ECC::Amount amount) override
+    std::vector<Coin> selectCoins(ECC::Amount amount, AssetID assetId) override
     {
         std::vector<Coin> res;
         ECC::Amount t = 0;
         for (auto& c : m_coins)
         {
+            if (c.m_assetId != assetId) continue;
             t += c.m_ID.m_Value;
             c.m_status = Coin::Outgoing;
             res.push_back(c);
@@ -113,7 +114,10 @@ public:
     {
         setTxParameter(p.m_txId, wallet::kDefaultSubTxID, wallet::TxParameterID::Amount, toByteBuffer(p.m_amount), false);
         setTxParameter(p.m_txId, wallet::kDefaultSubTxID, wallet::TxParameterID::Fee, toByteBuffer(p.m_fee), false);
-        setTxParameter(p.m_txId, wallet::kDefaultSubTxID, wallet::TxParameterID::Change, toByteBuffer(p.m_change), false);
+        setTxParameter(p.m_txId, wallet::kDefaultSubTxID, wallet::TxParameterID::ChangeBeam, toByteBuffer(p.m_changeBeam), false);
+        setTxParameter(p.m_txId, wallet::kDefaultSubTxID, wallet::TxParameterID::ChangeAsset, toByteBuffer(p.m_changeAsset), false);
+        setTxParameter(p.m_txId, wallet::kDefaultSubTxID, wallet::TxParameterID::AssetID, toByteBuffer(p.m_assetId), false);
+        setTxParameter(p.m_txId, wallet::kDefaultSubTxID, wallet::TxParameterID::AssetIdx, toByteBuffer(p.m_assetIdx), false);
         setTxParameter(p.m_txId, wallet::kDefaultSubTxID, wallet::TxParameterID::MinHeight, toByteBuffer(p.m_minHeight), false);
         setTxParameter(p.m_txId, wallet::kDefaultSubTxID, wallet::TxParameterID::PeerID, toByteBuffer(p.m_peerId), false);
         setTxParameter(p.m_txId, wallet::kDefaultSubTxID, wallet::TxParameterID::MyID, toByteBuffer(p.m_myId), false);
@@ -130,19 +134,20 @@ public:
 
     WalletAddress m_LastAdddr;
 
-    void saveAddress(const WalletAddress& wa) override
+    void saveAddress(const WalletAddress& wa, bool isLaser = false) override
     {
         m_LastAdddr = wa;
     }
 
-    boost::optional<WalletAddress> getAddress(const WalletID& id) const override
+    boost::optional<WalletAddress> getAddress(
+        const WalletID& id, bool isLaser = false) const override
     {
         if (id == m_LastAdddr.m_walletID)
             return m_LastAdddr;
 
         return boost::optional<WalletAddress>();
     }
-    void deleteAddress(const WalletID&) override {}
+    void deleteAddress(const WalletID&, bool isLaser = false) override {}
 
     Height getCurrentHeight() const override
     {

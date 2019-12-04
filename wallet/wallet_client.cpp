@@ -108,6 +108,16 @@ struct WalletModelBridge : public Bridge<IWalletModelAsync>
     {
 		call_async(&IWalletModelAsync::publishSwapOffer, offer);
     }
+
+    void loadSwapParams() override
+    {
+        call_async(&IWalletModelAsync::loadSwapParams);
+    }
+
+    void storeSwapParams(const beam::ByteBuffer& params) override
+    {
+        call_async(&IWalletModelAsync::storeSwapParams, params);
+    }
 #endif
     void cancelTx(const wallet::TxID& id) override
     {
@@ -134,15 +144,6 @@ struct WalletModelBridge : public Bridge<IWalletModelAsync>
         call_async(&IWalletModelAsync::changeCurrentWalletIDs, senderID, receiverID);
     }
 
-    void loadSwapParams() override
-    {
-        call_async(&IWalletModelAsync::loadSwapParams);
-    }
-
-    void storeSwapParams(const beam::ByteBuffer& params) override
-    {
-        call_async(&IWalletModelAsync::storeSwapParams, params);
-    }
 
     void generateNewAddress() override
     {
@@ -205,6 +206,11 @@ struct WalletModelBridge : public Bridge<IWalletModelAsync>
     void exportDataToJson() override
     {
         call_async(&IWalletModelAsync::exportDataToJson);
+    }
+
+    void exportTxHistoryToCsv() override
+    {
+        call_async(&IWalletModelAsync::exportTxHistoryToCsv);
     }
 };
 }
@@ -453,6 +459,9 @@ namespace beam::wallet
     void WalletClient::onCoinsChanged(ChangeAction action, const std::vector<Coin>& items)
     {
         m_CoinChangesCollector.CollectItems(action, items);
+        // TODO: refactor this
+        // We should call getStatus to update balances
+        onStatus(getStatus());
     }
 
     void WalletClient::onTransactionChanged(ChangeAction action, const std::vector<TxDescription>& items)
@@ -609,7 +618,7 @@ namespace beam::wallet
 
     void WalletClient::calcChange(Amount&& amount)
     {
-        auto coins = m_walletDB->selectCoins(amount);
+        auto coins = m_walletDB->selectCoins(amount, Zero);
         Amount sum = 0;
         for (auto& c : coins)
         {
@@ -661,6 +670,23 @@ namespace beam::wallet
             p->publishOffer(offer);
         }
     }
+
+    namespace {
+        const char* SWAP_PARAMS_NAME = "LastSwapParams";
+    }
+
+    void WalletClient::loadSwapParams()
+    {
+        ByteBuffer params;
+        m_walletDB->getBlob(SWAP_PARAMS_NAME, params);
+        onSwapParamsLoaded(params);
+    }
+
+    void WalletClient::storeSwapParams(const ByteBuffer& params)
+    {
+        m_walletDB->setVarRaw(SWAP_PARAMS_NAME, params.data(), params.size());
+    }
+
 #endif
 
     void WalletClient::cancelTx(const TxID& id)
@@ -689,8 +715,6 @@ namespace beam::wallet
     void WalletClient::saveAddress(const WalletAddress& address, bool bOwn)
     {
         m_walletDB->saveAddress(address);
-        if (bOwn)
-            getAddresses(bOwn);
     }
 
     void WalletClient::changeCurrentWalletIDs(const WalletID& senderID, const WalletID& receiverID)
@@ -723,22 +747,6 @@ namespace beam::wallet
         }
     }
 
-    namespace {
-        const char* SWAP_PARAMS_NAME = "LastSwapParams";
-    }
-
-    void WalletClient::loadSwapParams()
-    {
-        ByteBuffer params;
-        m_walletDB->getBlob(SWAP_PARAMS_NAME, params);
-        onSwapParamsLoaded(params);
-    }
-
-    void WalletClient::storeSwapParams(const ByteBuffer& params)
-    {
-        m_walletDB->setVarRaw(SWAP_PARAMS_NAME, params.data(), params.size());
-    }
-
     void WalletClient::deleteAddress(const WalletID& id)
     {
         try
@@ -766,7 +774,7 @@ namespace beam::wallet
 
             if (addr)
             {
-                if (addr->m_OwnID &&
+                if (addr->isOwn() &&
                     status != WalletAddress::ExpirationStatus::AsIs)
                 {
                     addr->setExpiration(status);
@@ -896,6 +904,13 @@ namespace beam::wallet
         onExportDataToJson(data);
     }
 
+    void WalletClient::exportTxHistoryToCsv()
+    {
+        auto data = storage::ExportTxHistoryToCsv(*m_walletDB);
+
+        onExportTxHistoryToCsv(data);   
+    }
+
     bool WalletClient::OnProgress(uint64_t done, uint64_t total)
     {
         onImportRecoveryProgress(done, total);
@@ -905,7 +920,8 @@ namespace beam::wallet
     WalletStatus WalletClient::getStatus() const
     {
         WalletStatus status;
-        storage::Totals totals(*m_walletDB);
+        storage::Totals totalsCalc(*m_walletDB);
+        const auto& totals = totalsCalc.GetTotals(Zero);
 
         status.available = totals.Avail;
         status.receivingIncoming = totals.ReceivingIncoming;

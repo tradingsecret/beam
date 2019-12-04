@@ -1206,12 +1206,14 @@
         <translation type="unfinished">Fee is too small</translation>
     </message>
     <message id="loading-view-estimate-minutes">
-        <source>min.</source>
-        <translation>mnt.</translation>
+        <source>min</source>
+        <oldsource>min.</oldsource>
+        <translation type="unfinished">mnt.</translation>
     </message>
     <message id="loading-view-estimate-seconds">
-        <source>sec.</source>
-        <translation>dtk.</translation>
+        <source>sec</source>
+        <oldsource>sec.</oldsource>
+        <translation type="unfinished">dtk.</translation>
     </message>
     <message id="loading-view-estimate-time">
         <source>Estimate time: %s</source>
@@ -1380,7 +1382,8 @@ please review your settings and try again</source>
         <translation type="unfinished">Rebuilding wallet data</translation>
     </message>
     <message id="loading-view-estimate-hours">
-        <source>h.</source>
+        <source>h</source>
+        <oldsource>h.</oldsource>
         <translation type="unfinished">h.</translation>
     </message>
     <message id="loading-view-net-problems">
@@ -1935,6 +1938,11 @@ Please check the swap token and try again.</source>
     </message>
     <message id="app-close-text">
         <source>There are %1 active transactions that might fail if the wallet will go offline. Are you sure to close the wallet now?</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message id="wallet-export-tx-history">
+        <source>Export transactions history</source>
+        <extracomment>transactions history screen, export button tooltip and open file dialog</extracomment>
         <translation type="unfinished"></translation>
     </message>
 </context>

@@ -138,6 +138,22 @@ void WalletModel::onAllUtxoChanged(beam::wallet::ChangeAction action, const std:
 void WalletModel::onAddressesChanged(beam::wallet::ChangeAction action, const std::vector<beam::wallet::WalletAddress>& items)
 {
     emit addressesChanged(action, items);
+    for (const auto& item : items)
+    {
+        if (item.isOwn())
+        {
+            if (action == ChangeAction::Removed)
+            {
+                m_myWalletIds.erase(item.m_walletID);
+                m_myAddrLabels.erase(item.m_label);
+            }
+            else
+            {
+                m_myWalletIds.emplace(item.m_walletID);
+                m_myAddrLabels.emplace(item.m_label);
+            }
+        }
+    }
 }
 
 void WalletModel::onAddresses(bool own, const std::vector<beam::wallet::WalletAddress>& addrs)
@@ -213,6 +229,11 @@ void WalletModel::onImportDataFromJson(bool isOk)
 
 void WalletModel::onExportDataToJson(const std::string& data)
 {
+}
+
+void WalletModel::onExportTxHistoryToCsv(const std::string& data)
+{
+    emit txHistoryExportedToCsv(QString::fromStdString(data));
 }
 
 void WalletModel::onChangeCurrentWalletIDs(beam::wallet::WalletID senderID, beam::wallet::WalletID receiverID)
