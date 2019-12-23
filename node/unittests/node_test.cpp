@@ -664,33 +664,30 @@ namespace beam
 			Height m_Height = 0;
 			Merkle::Hash m_hvRelLock = Zero;
 
-			void Export(TxKernel& krn) const
+			void Export(TxKernelStd& krn) const
 			{
 				krn.m_Fee = m_Fee;
-				krn.m_Commitment = ECC::Point::Native(ECC::Context::get().G * m_k);
+				krn.m_Height.m_Min = m_Height + 1;
 
 				if (m_bUseHashlock)
 				{
-					krn.m_pHashLock.reset(new TxKernel::HashLock); // why not?
-					ECC::Hash::Processor() << m_Fee << m_k >> krn.m_pHashLock->m_Preimage;
+					krn.m_pHashLock.reset(new TxKernelStd::HashLock); // why not?
+					ECC::Hash::Processor() << m_Fee << m_k >> krn.m_pHashLock->m_Value;
 				}
 
 				if (!(m_hvRelLock == Zero))
 				{
-					krn.m_pRelativeLock.reset(new TxKernel::RelativeLock);
+					krn.m_pRelativeLock.reset(new TxKernelStd::RelativeLock);
 					krn.m_pRelativeLock->m_ID = m_hvRelLock;
 					krn.m_pRelativeLock->m_LockHeight = 1;
 				}
 
-				ECC::Hash::Value hv;
-				krn.get_Hash(hv);
-				krn.m_Signature.Sign(hv, m_k);
-
+				krn.Sign(m_k);
 			}
 
-			void Export(TxKernel::Ptr& pKrn) const
+			void Export(TxKernelStd::Ptr& pKrn) const
 			{
-				pKrn.reset(new TxKernel);
+				pKrn.reset(new TxKernelStd);
 				Export(*pKrn);
 			}
 		};
@@ -760,7 +757,7 @@ namespace beam
 
 			m_pKdf->DeriveKey(mk.m_k, Key::ID(++m_nRunningIndex, Key::Type::Kernel));
 
-			TxKernel::Ptr pKrn;
+			TxKernelStd::Ptr pKrn;
 			mk.Export(pKrn);
 
 			tx.m_vKernels.push_back(std::move(pKrn));
@@ -839,7 +836,6 @@ namespace beam
 				HeightRange hr(np.m_Cursor.m_ID.m_Height + 1, MaxHeight);
 
 				verify_test(np.ValidateTxContext(*pTx, hr, false));
-				verify_test(np.ValidateTxWrtHeight(*pTx, hr));
 
 				Transaction::Context::Params pars;
 				Transaction::Context ctx(pars);
@@ -984,7 +980,8 @@ namespace beam
 			np.m_Horizon = horz;
 
 			NodeProcessor::StartParams sp;
-			sp.m_CheckIntegrityAndVacuum = true;
+			sp.m_CheckIntegrity = true;
+			sp.m_Vacuum = true;
 			sp.m_ResetCursor = true;
 			np.Initialize(g_sz, sp);
 		}
@@ -1634,37 +1631,56 @@ namespace beam
 				assert(msgTx.m_Transaction);
 
 				{
-					Output::Ptr pOut(new Output);
+					TxKernelShieldedOutput::Ptr pKrn(new TxKernelShieldedOutput);
+					pKrn->m_Height.m_Min = h + 1;
 
-					Output::Shielded::Viewer viewer;
+					ShieldedTxo::Viewer viewer;
 					viewer.FromOwner(*m_Wallet.m_pKdf);
 
-					Output::Shielded::PublicGen gen;
+					ShieldedTxo::PublicGen gen;
 					gen.m_pGen = viewer.m_pGen;
 					gen.m_pSer = viewer.m_pSer;
-					gen.m_Owner = 12U; // whatever
 
 					ECC::Hash::Value nonce;
 					nonce = 13U; // whatever
 
-					Output::Shielded::Data d;
+					ShieldedTxo::Data d;
 					d.m_hScheme = h + 1;
 					d.m_Value = m_Shielded.m_Value;
-					d.Generate(*pOut, gen, nonce);
+					d.GenerateS(pKrn->m_Txo.m_Serial, gen, nonce);
+
+					ECC::Point::Native pt = ECC::Commitment(d.m_kOutG, d.m_Value);
+					pKrn->m_Txo.m_Commitment = pt;
+
+					pKrn->UpdateMsg();
+
+					ECC::RangeProof::CreatorParams cp;
+					d.GetOutputSeed(*gen.m_pGen, cp.m_Seed.V);
+
+					ZeroObject(cp.m_Kidv);
+					cp.m_Kidv.set_Subkey(0);
+					cp.m_Kidv.m_Value = d.m_Value;
+
+					ECC::Oracle oracle;
+					oracle << pKrn->m_Msg;
+
+					pKrn->m_Txo.m_RangeProof.Create(d.m_kOutG, cp, oracle);
+
+
+					pKrn->MsgToID();
 
 					m_Shielded.m_sk = d.m_kOutG;
 					m_Shielded.m_sk += d.m_kSerG;
-					m_Shielded.m_Commitment = pOut->m_pShielded->m_SerialPub;
+					m_Shielded.m_Commitment = pKrn->m_Txo.m_Serial.m_SerialPub;
 
 					Key::IKdf::Ptr pSerPrivate;
-					Output::Shielded::Viewer::GenerateSerPrivate(pSerPrivate, *m_Wallet.m_pKdf);
+					ShieldedTxo::Viewer::GenerateSerPrivate(pSerPrivate, *m_Wallet.m_pKdf);
 
 					d.GetSpendKey(m_Shielded.m_skSpendKey, *pSerPrivate);
 
-					ECC::Point::Native pt;
-					verify_test(pOut->IsValid(h + 1, pt));
+					verify_test(pKrn->IsValid(h + 1, pt));
 
-					msgTx.m_Transaction->m_vOutputs.push_back(std::move(pOut));
+					msgTx.m_Transaction->m_vKernels.push_back(std::move(pKrn));
 					m_Wallet.UpdateOffset(*msgTx.m_Transaction, d.m_kOutG, true);
 				}
 
@@ -1700,11 +1716,12 @@ namespace beam
 				ECC::Scalar::Native sk;
 				ECC::SetRandom(sk);
 
-				Input::Ptr pInp(new Input);
-				pInp->m_Commitment = ECC::Commitment(sk, m_Shielded.m_Value);
-				pInp->m_pSpendProof.reset(new Input::SpendProof);
-				pInp->m_pSpendProof->m_WindowEnd = nWnd1;
-				pInp->m_pSpendProof->m_Cfg = m_Shielded.m_Cfg;
+				Height h = m_vStates.back().m_Height;
+
+				TxKernelShieldedInput::Ptr pKrn(new TxKernelShieldedInput);
+				pKrn->m_Height.m_Min = h + 1;
+				pKrn->m_WindowEnd = nWnd1;
+				pKrn->m_SpendProof.m_Cfg = m_Shielded.m_Cfg;
 
 				Lelantus::CmListVec lst;
 
@@ -1724,37 +1741,44 @@ namespace beam
 					std::copy(msg.m_Items.begin(), msg.m_Items.end(), lst.m_vec.end() - msg.m_Items.size());
 				}
 
-				Lelantus::Prover p(lst, *pInp->m_pSpendProof);
+				Lelantus::Prover p(lst, pKrn->m_SpendProof);
 				p.m_Witness.V.m_L = static_cast<uint32_t>(m_Shielded.m_N - m_Shielded.m_Confirmed) - 1;
 				p.m_Witness.V.m_R = m_Shielded.m_sk;
 				p.m_Witness.V.m_R_Output = sk;
 				p.m_Witness.V.m_SpendSk = m_Shielded.m_skSpendKey;
 				p.m_Witness.V.m_V = m_Shielded.m_Value;
 
-				Lelantus::Proof::Output outp;
+				pKrn->UpdateMsg();
+
 				ECC::Oracle o1;
-				p.Generate(outp, Zero, o1);
+				o1 << pKrn->m_Msg;
+				p.Generate(Zero, o1);
+
+				pKrn->MsgToID();
 
 				{
 					// test
 				}
 
 				Amount fee = 100;
-				fee += Transaction::FeeSettings().m_ShieldedOutput;
+				fee += Transaction::FeeSettings().m_ShieldedInput;
 
-				msgTx.m_Transaction->m_vInputs.push_back(std::move(pInp));
+				msgTx.m_Transaction->m_vKernels.push_back(std::move(pKrn));
 				m_Wallet.UpdateOffset(*msgTx.m_Transaction, sk, false);
 
-				Height h = m_vStates.back().m_Height;
-				m_Wallet.MakeTxOutput(*msgTx.m_Transaction, h + 1, 0, m_Shielded.m_Value, fee);
+				m_Wallet.MakeTxOutput(*msgTx.m_Transaction, h, 0, m_Shielded.m_Value, fee);
 
 				Transaction::Context::Params pars;
 				Transaction::Context ctx(pars);
 				ctx.m_Height.m_Min = h + 1;
 				verify_test(msgTx.m_Transaction->IsValid(ctx));
 
-				verify_test(msgTx.m_Transaction->m_vKernels.size() == 1);
-				msgTx.m_Transaction->m_vKernels.front()->get_ID(m_Shielded.m_SpendKernelID);
+				for (size_t i = 0; i < msgTx.m_Transaction->m_vKernels.size(); i++)
+				{
+					const TxKernel& krn = *msgTx.m_Transaction->m_vKernels[i];
+					if (krn.get_Subtype() == TxKernel::Subtype::Std)
+						m_Shielded.m_SpendKernelID = krn.m_Internal.m_ID;
+				}
 
 				msgTx.m_Fluff = true;
 				Send(msgTx);
@@ -1778,33 +1802,38 @@ namespace beam
 				Send(msgOut);
 			}
 
-			bool OnNotAchieved(bool bFin, const char* sz)
+			struct AchievementTester
 			{
-				if (bFin)
-					fail_test(sz);
-				return false;
-			}
+				bool m_AllDone = true;
+				const bool m_Fin;
+
+				AchievementTester(bool bFin) :m_Fin(bFin) {}
+
+				void Test(bool bAchieved, const char* sz)
+				{
+					if (!bAchieved)
+					{
+						m_AllDone = false;
+						if (m_Fin)
+							fail_test(sz);
+					}
+				}
+			};
+
 
 			bool TestAllDone(bool bFin)
 			{
-				if (!IsHeightReached())
-					return OnNotAchieved(bFin, "Blockchain height didn't reach target");
-				if (!IsAllProofsReceived())
-					return OnNotAchieved(bFin, "some proofs missing");
-				if (!IsAllBbsReceived())
-					return OnNotAchieved(bFin, "some BBS messages missing");
-				if (!IsAllRecoveryReceived())
-					return OnNotAchieved(bFin, "some recovery messages missing");
-				//if (!m_bCustomAssetRecognized)
-				//	return OnNotAchieved(bFin, "CA not recognized");
-				if (!m_Shielded.m_SpendConfirmed)
-					return OnNotAchieved(bFin, "Shielded spend not confirmed");
-				if (!m_Shielded.m_EvtAdd)
-					return OnNotAchieved(bFin, "Shielded Add event didn't arrive");
-				if (!m_Shielded.m_EvtSpend)
-					return OnNotAchieved(bFin, "Shielded Spend event didn't arrive");
+				AchievementTester t(bFin);
+				t.Test(IsHeightReached(), "Blockchain height didn't reach target");
+				t.Test(IsAllProofsReceived(), "some proofs missing");
+				t.Test(IsAllBbsReceived(), "some BBS messages missing");
+				t.Test(IsAllRecoveryReceived(), "some recovery messages missing");
+				//t.Test(m_bCustomAssetRecognized, "CA not recognized");
+				t.Test(m_Shielded.m_SpendConfirmed, "Shielded spend not confirmed");
+				t.Test(m_Shielded.m_EvtAdd, "Shielded Add event didn't arrive");
+				t.Test(m_Shielded.m_EvtSpend, "Shielded Spend event didn't arrive");
 
-				return true; // all achieved
+				return t.m_AllDone;
 			}
 
 			virtual void OnMsg(proto::NewTip&& msg) override
@@ -1886,18 +1915,18 @@ namespace beam
 				{
 					const MiniWallet::MyKernel mk = m_Wallet.m_MyKernels[i];
 
-					TxKernel krn;
+					TxKernelStd krn;
 					mk.Export(krn);
 
 					proto::GetProofKernel2 msgOut2;
-					krn.get_ID(msgOut2.m_ID);
+					msgOut2.m_ID = krn.m_Internal.m_ID;
 					msgOut2.m_Fetch = true;
 					Send(msgOut2);
 
 					m_queProofsKrnExpected.push_back(i);
 
 					proto::GetProofKernel msgOut3;
-					krn.get_ID(msgOut3.m_ID);
+					msgOut3.m_ID = krn.m_Internal.m_ID;
 					Send(msgOut3);
 
 					m_queProofsKrnExpected.push_back(i);
@@ -1918,22 +1947,30 @@ namespace beam
 
 					assert(msgTx.m_Transaction);
 
-					bool bEmitAsset = (m_AssetEmitted == Zero);
+					const Amount nFeeForEmission = 300;
+					bool bEmitAsset =
+						(m_AssetEmitted == Zero) &&
+						(msg.m_Description.m_Height + 1 >= Rules::get().pForks[2].m_Height) &&
+						(val >= nFeeForEmission);
 
 					if (bEmitAsset)
 					{
+						val -= nFeeForEmission;
+
 						Key::IDV kidv(Zero);
 						kidv.m_Value = val;
 
-						ECC::Scalar::Native skAsset, skOut;
+						ECC::Scalar::Native sk, skAsset, skOut;
+						ECC::SetRandom(sk);
 						ECC::SetRandom(skAsset);
 						proto::Sk2Pk(m_AssetEmitted, skAsset);
 
-						TxKernel::Ptr pKrn(new TxKernel);
-						pKrn->m_Commitment.m_X = m_AssetEmitted;
-						pKrn->m_Commitment.m_Y = 0;
-						pKrn->m_AssetEmission = kidv.m_Value;
-						pKrn->Sign(skAsset);
+						TxKernelAssetEmit::Ptr pKrn(new TxKernelAssetEmit);
+						pKrn->m_AssetID = m_AssetEmitted;
+						pKrn->m_Fee = nFeeForEmission;
+						pKrn->m_Value = kidv.m_Value;
+						pKrn->m_Height.m_Min = msg.m_Description.m_Height + 1;
+						pKrn->Sign(sk, skAsset);
 
 						Output::Ptr pOutp(new Output);
 						pOutp->m_AssetID = m_AssetEmitted;
@@ -1943,7 +1980,7 @@ namespace beam
 						m_Wallet.UpdateOffset(*msgTx.m_Transaction, skOut, true);
 
 						msgTx.m_Transaction->m_vKernels.push_back(std::move(pKrn));
-						m_Wallet.UpdateOffset(*msgTx.m_Transaction, skAsset, true);
+						m_Wallet.UpdateOffset(*msgTx.m_Transaction, sk, true);
 
 						msgTx.m_Transaction->Normalize();
 					}
@@ -2037,12 +2074,10 @@ namespace beam
 					{
 						verify_test(msg.m_Kernel);
 
-						AmountBig::Type fee;
 						ECC::Point::Native exc;
-						verify_test(msg.m_Kernel->IsValid(msg.m_Height, fee, exc));
+						verify_test(msg.m_Kernel->IsValid(msg.m_Height, exc));
 
-						Merkle::Hash hv;
-						msg.m_Kernel->get_ID(hv);
+						Merkle::Hash hv = msg.m_Kernel->m_Internal.m_ID;
 						Merkle::Interpret(hv, msg.m_Proof);
 
 						verify_test(msg.m_Height <= m_vStates.size());
@@ -2065,13 +2100,11 @@ namespace beam
 
 					if (!msg.m_Proof.empty())
 					{
-						TxKernel krn;
+						TxKernelStd krn;
 						mk.Export(krn);
 						verify_test(m_vStates.back().IsValidProofKernel(krn, msg.m_Proof));
 
-						krn.get_ID(m_Wallet.m_hvKrnRel);
-
-						if (!m_Shielded.m_SpendConfirmed && (m_Wallet.m_hvKrnRel == m_Shielded.m_SpendKernelID))
+						if (!m_Shielded.m_SpendConfirmed && (krn.m_Internal.m_ID == m_Shielded.m_SpendKernelID))
 							m_Shielded.m_SpendConfirmed = true;
 					}
 				}

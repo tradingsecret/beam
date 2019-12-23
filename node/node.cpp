@@ -907,7 +907,7 @@ Key::IPKdf* Node::Processor::get_ViewerKey()
 	return get_ParentObj().m_Keys.m_pOwner.get();
 }
 
-const Output::Shielded::Viewer* Node::Processor::get_ViewerShieldedKey()
+const ShieldedTxo::Viewer* Node::Processor::get_ViewerShieldedKey()
 {
 	return get_ParentObj().m_Keys.m_pOwner ?
 		&get_ParentObj().m_Keys.m_ShieldedViewer :
@@ -2165,9 +2165,9 @@ uint8_t Node::ValidateTx(Transaction::Context& ctx, const Transaction& tx)
 	if (ctx.m_Height.m_Min >= Rules::get().pForks[1].m_Height)
 	{
 		Transaction::FeeSettings feeSettings;
-		AmountBig::Type fees = feeSettings.Calculate(tx);
+		AmountBig::Type fees = feeSettings.Calculate(ctx.m_Stats);
 
-		if (ctx.m_Fee < fees)
+		if (ctx.m_Stats.m_Fee < fees)
 			return proto::TxStatus::LowFee;
 	}
 
@@ -2201,11 +2201,9 @@ void Node::LogTx(const Transaction& tx, uint8_t nStatus, const Transaction::KeyT
     for (size_t i = 0; i < tx.m_vKernels.size(); i++)
     {
         const TxKernel& krn = *tx.m_vKernels[i];
-        Merkle::Hash hv;
-        krn.get_ID(hv);
 
 		char sz[Merkle::Hash::nTxtLen + 1];
-		hv.Print(sz);
+		krn.m_Internal.m_ID.Print(sz);
 
         os << "\n\tK: " << sz << " Fee=" << krn.m_Fee;
     }
@@ -2224,12 +2222,8 @@ void Node::LogTxStem(const Transaction& tx, const char* szTxt)
 
 	for (size_t i = 0; i < tx.m_vKernels.size(); i++)
 	{
-		const TxKernel& krn = *tx.m_vKernels[i];
-		Merkle::Hash hv;
-		krn.get_ID(hv);
-
 		char sz[Merkle::Hash::nTxtLen + 1];
-		hv.Print(sz);
+		tx.m_vKernels[i]->m_Internal.m_ID.Print(sz);
 
 		os << "\n\tK: " << sz;
 	}
@@ -2271,7 +2265,9 @@ uint32_t Node::RandomUInt32(uint32_t threshold)
 
 uint8_t Node::OnTransactionStem(Transaction::Ptr&& ptx, const Peer* pPeer)
 {
-	if (ptx->m_vInputs.empty() || ptx->m_vKernels.empty()) {
+	TxStats s;
+	ptx->get_Reader().AddStats(s);
+	if (!s.m_Inputs || !s.m_Kernels) {
 		// stupid compiler insists on parentheses here!
 		return proto::TxStatus::TooSmall;
 	}
@@ -2287,7 +2283,7 @@ uint8_t Node::OnTransactionStem(Transaction::Ptr&& ptx, const Peer* pPeer)
         const TxKernel& krn = *ptx->m_vKernels[i];
 
         TxPool::Stem::Element::Kernel key;
-        krn.get_ID(key.m_hv);
+		key.m_pKrn = &krn;
 
         TxPool::Stem::KrnSet::iterator it = m_Dandelion.m_setKrns.find(key);
         if (m_Dandelion.m_setKrns.end() == it)
@@ -2345,7 +2341,7 @@ uint8_t Node::OnTransactionStem(Transaction::Ptr&& ptx, const Peer* pPeer)
         std::unique_ptr<TxPool::Stem::Element> pGuard(new TxPool::Stem::Element);
         pGuard->m_bAggregating = false;
         pGuard->m_Time.m_Value = 0;
-        pGuard->m_Profit.m_Fee = ctx.m_Fee;
+        pGuard->m_Profit.m_Fee = ctx.m_Stats.m_Fee;
         pGuard->m_Profit.SetSize(*ptx);
         pGuard->m_pValue.swap(ptx);
 		pGuard->m_Height = ctx.m_Height;
@@ -2361,16 +2357,8 @@ uint8_t Node::OnTransactionStem(Transaction::Ptr&& ptx, const Peer* pPeer)
 
 	bool bDontAggregate =
 		(pDup->m_pValue->m_vOutputs.size() >= m_Cfg.m_Dandelion.m_OutputsMax) || // already big enough
+		(ctx.m_Stats.m_InputsShielded || ctx.m_Stats.m_OutputsShielded) || // contains shielded elements
 		!m_Keys.m_pMiner; // can't manage decoys
-
-	if (!bDontAggregate)
-	{
-		uint32_t nIns, nOuts;
-		pDup->m_pValue->get_Reader().CalculateShielded(nIns, nOuts);
-
-		if (nIns || nOuts)
-			bDontAggregate = true;
-	}
 
     if (bDontAggregate)
         OnTransactionAggregated(*pDup);
@@ -2636,19 +2624,21 @@ bool Node::OnTransactionFluff(Transaction::Ptr&& ptxArg, const Peer* pPeer, TxPo
 	Transaction::Context ctx(pars);
     if (pElem)
     {
-		if (!pElem->m_Height.IsInRange(m_Processor.m_Cursor.m_ID.m_Height + 1))
-			return false;
+		bool bValid = pElem->m_Height.IsInRange(m_Processor.m_Cursor.m_ID.m_Height + 1);
 
-        ctx.m_Fee = pElem->m_Profit.m_Fee;
+        ctx.m_Stats.m_Fee = pElem->m_Profit.m_Fee;
 		ctx.m_Height = pElem->m_Height;
         m_Dandelion.Delete(*pElem);
-    }
+
+		if (!bValid)
+			return false;
+	}
     else
     {
         for (size_t i = 0; i < ptx->m_vKernels.size(); i++)
         {
             TxPool::Stem::Element::Kernel key;
-            ptx->m_vKernels[i]->get_ID(key.m_hv);
+			key.m_pKrn = ptx->m_vKernels[i].get();
 
             TxPool::Stem::KrnSet::iterator it = m_Dandelion.m_setKrns.find(key);
             if (m_Dandelion.m_setKrns.end() != it)
@@ -3450,18 +3440,17 @@ void Node::Peer::OnMsg(proto::BlockFinalization&& msg)
         // verify that all the outputs correspond to our viewer's Kdf (in case our comm was hacked this'd prevent mining for someone else)
         // and do the overall validation
         TxBase::Context::Params pars;
-		pars.m_bBlockMode = true;
 		TxBase::Context ctx(pars);
 		ctx.m_Height = m_This.m_Processor.m_Cursor.m_ID.m_Height + 1;
         if (!m_This.m_Processor.ValidateAndSummarize(ctx, *msg.m_Value, msg.m_Value->get_Reader()))
             ThrowUnexpected();
 
-        if (ctx.m_Coinbase != AmountBig::Type(Rules::get_Emission(m_This.m_Processor.m_Cursor.m_ID.m_Height + 1)))
+        if (ctx.m_Stats.m_Coinbase != AmountBig::Type(Rules::get_Emission(m_This.m_Processor.m_Cursor.m_ID.m_Height + 1)))
             ThrowUnexpected();
 
         ctx.m_Sigma = -ctx.m_Sigma;
-        ctx.m_Coinbase += AmountBig::Type(x.m_Fees);
-        AmountBig::AddTo(ctx.m_Sigma, ctx.m_Coinbase);
+        ctx.m_Stats.m_Coinbase += AmountBig::Type(x.m_Fees);
+        AmountBig::AddTo(ctx.m_Sigma, ctx.m_Stats.m_Coinbase);
 
         if (!(ctx.m_Sigma == Zero))
             ThrowUnexpected();

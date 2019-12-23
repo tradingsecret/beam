@@ -56,16 +56,34 @@ class NodeProcessor
 
 	struct BlockInterpretCtx;
 
+	template <typename T>
+	bool HandleElementVecFwd(const T& vec, BlockInterpretCtx&, size_t& n);
+	template <typename T>
+	void HandleElementVecBwd(const T& vec, BlockInterpretCtx&, size_t n);
+
 	bool HandleBlock(const NodeDB::StateID&, MultiblockContext&);
-	bool HandleValidatedTx(TxBase::IReader&&, BlockInterpretCtx&);
-	bool HandleValidatedBlock(TxBase::IReader&&, const Block::BodyBase&, BlockInterpretCtx&);
+	bool HandleValidatedTx(const TxVectors::Full&, BlockInterpretCtx&);
+	bool HandleValidatedBlock(const Block::Body&, BlockInterpretCtx&);
 	bool HandleBlockElement(const Input&, BlockInterpretCtx&);
 	bool HandleBlockElement(const Output&, BlockInterpretCtx&);
+	bool HandleBlockElement(const TxKernel&, BlockInterpretCtx&);
 	bool HandleShieldedElement(const ECC::Point&, bool bOutp, bool bFwd);
 
-	void RecognizeUtxos(TxBase::IReader&&, Height h, TxoID nShielded);
+	void Recognize(const Input&, Height);
+	void Recognize(const Output&, Height, Key::IPKdf&);
+	void Recognize(const TxVectors::Eternal&, Height, const ShieldedTxo::Viewer*);
+	void Recognize(const TxKernelShieldedInput&, Height);
+	void Recognize(const TxKernelShieldedOutput&, Height, const ShieldedTxo::Viewer*);
 
-	static uint64_t ProcessKrnMmr(Merkle::Mmr&, TxBase::IReader&&, const Merkle::Hash& idKrn, TxKernel::Ptr* ppRes);
+	bool HandleKernel(const TxKernel&, BlockInterpretCtx&);
+
+#define THE_MACRO(id, name) bool HandleKernel(const TxKernel##name&, BlockInterpretCtx&);
+	BeamKernelsAll(THE_MACRO)
+#undef THE_MACRO
+
+	static uint64_t ProcessKrnMmr(Merkle::Mmr&, std::vector<TxKernel::Ptr>&, const Merkle::Hash& idKrn, TxKernel::Ptr* ppRes);
+
+	struct KrnFlyMmr;
 
 	static const uint32_t s_TxoNakedMin = sizeof(ECC::Point); // minimal output size - commitment
 	static const uint32_t s_TxoNakedMax = s_TxoNakedMin + 0x10; // In case the output has the Incubation period - extra size is needed (actually less than this).
@@ -139,13 +157,12 @@ class NodeProcessor
 	void DeleteBlocksInRange(const NodeDB::StateID& sidTop, Height hStop);
 	void DeleteBlock(uint64_t);
 
-	struct BlockShieldedData;
-
 public:
 
 	struct StartParams {
 		bool m_ResetCursor = false;
-		bool m_CheckIntegrityAndVacuum = false;
+		bool m_CheckIntegrity = false;
+		bool m_Vacuum = false;
 		bool m_ResetSelfID = false;
 		bool m_EraseSelfID = false;
 	};
@@ -282,21 +299,20 @@ public:
 	virtual Task::Processor& get_TaskProcessor() { return m_SyncProcessor; }
 
 	bool ValidateAndSummarize(TxBase::Context&, const TxBase&, TxBase::IReader&&);
-	bool VerifyBlock(const Block::BodyBase&, TxBase::IReader&&, const HeightRange&);
 
 	virtual Key::IPKdf* get_ViewerKey() { return nullptr; }
-	virtual const Output::Shielded::Viewer* get_ViewerShieldedKey() { return nullptr; }
+	virtual const ShieldedTxo::Viewer* get_ViewerShieldedKey() { return nullptr; }
 
 	void RescanOwnedTxos();
 
 	uint64_t FindActiveAtStrict(Height);
 
 	bool ValidateTxContext(const Transaction&, const HeightRange&, bool bShieldedTested); // assuming context-free validation is already performed, but 
-	bool ValidateTxWrtHeight(const Transaction&, const HeightRange&);
 	bool ValidateInputs(const ECC::Point&, Input::Count = 1);
 	bool ValidateShieldedNoDup(const ECC::Point&, bool bOutp);
-	bool IsShieldedInPool(const Input&);
+
 	bool IsShieldedInPool(const Transaction&);
+	bool IsShieldedInPool(const TxKernelShieldedInput&);
 
 	struct GeneratedBlock
 	{

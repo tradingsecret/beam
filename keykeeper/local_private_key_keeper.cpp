@@ -265,24 +265,35 @@ namespace beam::wallet
     {
         auto excess = GetExcess(inputs, outputs, assetId, offset);
 
-        TxKernel kernel;
+        TxKernelStd kernel;
         kernel.m_Commitment = kernelParamerters.commitment;
         kernel.m_Fee = kernelParamerters.fee;
         kernel.m_Height = kernelParamerters.height;
-        if (kernelParamerters.hashLock)
+        if (kernelParamerters.lockImage || kernelParamerters.lockPreImage)
         {
-            kernel.m_pHashLock = make_unique<TxKernel::HashLock>(*kernelParamerters.hashLock);
+            kernel.m_pHashLock = make_unique<TxKernelStd::HashLock>();
+
+			if (kernelParamerters.lockPreImage)
+				kernel.m_pHashLock->m_Value = *kernelParamerters.lockPreImage;
+			else
+			{
+				kernel.m_pHashLock->m_Value = *kernelParamerters.lockImage;
+				kernel.m_pHashLock->m_IsImage = true;
+			}
         }
-        Merkle::Hash message;
-        kernel.get_Hash(message, kernelParamerters.lockImage ? &*kernelParamerters.lockImage : nullptr);
+		kernel.UpdateID();
+        const Merkle::Hash& message = kernel.m_Internal.m_ID;
 
-        ECC::Signature::MultiSig multiSig;
-        ECC::Scalar::Native partialSignature;
-        multiSig.m_NoncePub = publicNonce;
-        multiSig.m_Nonce = GetNonce(nonceSlot);
-        multiSig.SignPartial(partialSignature, message, excess);
+        Scalar::Native nonce = GetNonce(nonceSlot);
 
-        return Scalar(partialSignature);
+        // TODO: Fix this!!!
+        // If the following line is uncommented - swap_test hangs!
+        //ECC::GenRandom(m_Nonces[nonceSlot].V); // Invalidate slot immediately after using it (to make it similar to HW wallet)!
+
+		kernel.m_Signature.m_NoncePub = publicNonce;
+		kernel.m_Signature.SignPartial(message, excess, nonce);
+
+		return kernel.m_Signature.m_k;
     }
 
     Key::IKdf::Ptr LocalPrivateKeyKeeper::get_SbbsKdf() const
@@ -333,9 +344,10 @@ namespace beam::wallet
     {
         const auto& randomValue = m_Nonces[slot].V;
 
-        NoLeak<Scalar::Native> nonce;
-        m_MasterKdf->DeriveKey(nonce.V, randomValue);
-        return nonce.V;
+        Scalar::Native nonce;
+        m_MasterKdf->DeriveKey(nonce, randomValue);
+
+        return nonce;
     }
 
     Scalar::Native LocalPrivateKeyKeeper::GetExcess(const std::vector<Key::IDV>& inputs, const std::vector<Key::IDV>& outputs, const AssetID& assetId, const ECC::Scalar::Native& offset) const
@@ -360,45 +372,27 @@ namespace beam::wallet
         return excess;
     }
 
-    Scalar::Native LocalPrivateKeyKeeper::GetAssetKey(beam::Key::ID assetKeyId)
+    ECC::Scalar::Native LocalPrivateKeyKeeper::SignEmissionKernel(TxKernelAssetEmit& kernel, uint32_t assetIdx)
     {
-        Scalar::Native secretKey;
-        m_MasterKdf->DeriveKey(secretKey, assetKeyId);
-        return secretKey;
+        ECC::Scalar::Native kernelSk;
+        m_MasterKdf->DeriveKey(kernelSk, Key::ID(assetIdx, Key::Type::Kernel, assetIdx));
+        kernel.Sign(kernelSk, GetAssetKeypair(assetIdx).second);
+        return -kernelSk;
     }
 
-    AssetID LocalPrivateKeyKeeper::AIDFromKeyIndex(uint32_t assetIdx)
+    std::pair<AssetID, ECC::Scalar::Native> LocalPrivateKeyKeeper::GetAssetKeypair(uint32_t assetIdx)
     {
-        auto assetKeyId = Key::ID(assetIdx, Key::Type::Asset, assetIdx);
-        auto assetKey = GetAssetKey(assetKeyId);
-        AssetID assetId = Zero;
-        proto::Sk2Pk(assetId, assetKey);
-        return assetId;
+        Scalar::Native skAssetSk;
+        m_MasterKdf->DeriveKey(skAssetSk, beam::Key::ID(assetIdx, beam::Key::Type::Asset));
+
+        beam::AssetID assetId;
+        beam::proto::Sk2Pk(assetId, skAssetSk);
+
+        return std::make_pair(assetId, std::move(skAssetSk));
     }
 
-    ECC::Scalar::Native LocalPrivateKeyKeeper::SignEmissionInOutKernel(TxKernel::Ptr& kernel, uint32_t assetIdx)
+    AssetID LocalPrivateKeyKeeper::GetAssetID(uint32_t assetIdx)
     {
-        Scalar::Native sk;
-
-        auto kernelKeyId = Key::ID(assetIdx,  Key::Type::Kernel, assetIdx);
-        m_MasterKdf->DeriveKey(sk, kernelKeyId);
-        kernel->m_Commitment = ECC::Context::get().G * sk;
-        kernel->Sign(sk);
-
-        sk = -sk;
-        return sk;
-    }
-
-    ECC::Scalar::Native LocalPrivateKeyKeeper::SignEmissionKernel(TxKernel::Ptr& kernel, uint32_t assetIdx)
-    {
-        auto assetID = AIDFromKeyIndex(assetIdx);
-        kernel->m_Commitment.m_X = assetID;
-        kernel->m_Commitment.m_Y = 0;
-
-        auto assetKey = GetAssetKey(Key::ID(assetIdx, Key::Type::Asset, assetIdx));
-        kernel->Sign(assetKey);
-
-        assetKey = -assetKey;
-        return assetKey;
+        return GetAssetKeypair(assetIdx).first;
     }
 }

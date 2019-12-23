@@ -522,7 +522,7 @@ struct TestWalletNetwork
         PostAsync();
     }
 
-    virtual void SendEncryptedMessage(const WalletID& peerID, const ByteBuffer& msg) override
+    virtual void SendRawMessage(const WalletID& peerID, const ByteBuffer& msg) override
     {
     }
     
@@ -547,7 +547,7 @@ struct TestBlockchain
     struct KrnPerBlock
     {
         std::vector<Merkle::Hash> m_vKrnIDs;
-        std::vector<shared_ptr<TxKernel>> m_Kernels;
+        std::vector<TxKernel::Ptr> m_Kernels;
 
         struct Mmr :public Merkle::FlyMmr
         {
@@ -762,10 +762,7 @@ struct TestBlockchain
                     msgOut.m_Height = iState;
 
                     if (data.m_Fetch)
-                    {
-                        msgOut.m_Kernel.reset(new TxKernel);
-                        *msgOut.m_Kernel = *kpb.m_Kernels[i];
-                    }
+						kpb.m_Kernels[i]->Clone(msgOut.m_Kernel);
                     return;
                 }
             }
@@ -774,18 +771,14 @@ struct TestBlockchain
 
     void AddKernel(const TxKernel& krn)
     {
-        Merkle::Hash hvKrn;
-        krn.get_Hash(hvKrn);
-
         if (m_vBlockKernels.size() <= m_mcm.m_vStates.size())
             m_vBlockKernels.emplace_back();
 
         KrnPerBlock& kpb = m_vBlockKernels.back();
-        kpb.m_vKrnIDs.push_back(hvKrn);
+        kpb.m_vKrnIDs.push_back(krn.m_Internal.m_ID);
 
-        auto ptr = make_shared<TxKernel>();
-        *ptr = krn;
-        kpb.m_Kernels.push_back(ptr);
+		kpb.m_Kernels.emplace_back();
+		krn.Clone(kpb.m_Kernels.back());
     }
 
     void HandleTx(const proto::NewTransaction& data)

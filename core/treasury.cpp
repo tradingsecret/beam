@@ -194,8 +194,8 @@ namespace beam
 
 		kdf.DeriveKey(sk, Key::ID(nIndex++, FOURCC_FROM(KeR3)));
 
-		m_pKernel.reset(new TxKernel);
-		m_pKernel->Sign(sk);
+		m_pKernel.reset(new TxKernelStd);
+		Cast::Up<TxKernelStd>(*m_pKernel).Sign(sk);
 		offset += sk;
 
 		offset = -offset;
@@ -216,11 +216,14 @@ namespace beam
 			(m_pKernel->m_Height.m_Max != MaxHeight))
 			return false;
 
+		TxVectors::Full txv;
+		TxVectors::Writer(txv, txv).Dump(Reader(*this));
+		txv.Normalize();
+
 		TxBase::Context::Params pars;
-		pars.m_bVerifyOrder = false;
 		TxBase::Context ctx(pars);
 		ZeroObject(ctx.m_Height);
-		if (!ctx.ValidateAndSummarize(m_Base, Reader(*this)))
+		if (!ctx.ValidateAndSummarize(m_Base, txv.get_Reader()))
 			return false;
 
 		Point::Native comm, comm2;
@@ -404,7 +407,7 @@ namespace beam
 		if (!ctx.ValidateAndSummarize(m_Data, m_Data.get_Reader()))
 			return false;
 
-		if (!(ctx.m_Fee == Zero))
+		if (!(ctx.m_Stats.m_Fee == Zero))
 			return false; // doesn't make sense for treasury
 
 		ctx.m_Sigma = -ctx.m_Sigma;

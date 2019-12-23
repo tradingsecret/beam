@@ -14,7 +14,7 @@
 
 #pragma once
 
-#include "wallet/common.h"
+#include "wallet/core/common.h"
 
 namespace beam::wallet
 {
@@ -24,7 +24,7 @@ namespace beam::wallet
         beam::Amount fee;
         ECC::Point commitment;
         boost::optional<ECC::Hash::Value> lockImage;
-        boost::optional<beam::TxKernel::HashLock> hashLock;
+		boost::optional<ECC::Hash::Value> lockPreImage;
     };
 
     //
@@ -82,8 +82,7 @@ namespace beam::wallet
         //
         // For assets
         //
-        virtual AssetID AIDFromKeyIndex(uint32_t assetIdx) = 0;
-        virtual ECC::Scalar::Native SignEmissionInOutKernel(TxKernel::Ptr& m_Kernel, uint32_t assetIdx) = 0;
-        virtual ECC::Scalar::Native SignEmissionKernel(TxKernel::Ptr& kernel, uint32_t assetIdx) = 0;
+        virtual ECC::Scalar::Native SignEmissionKernel(TxKernelAssetEmit& kernel, uint32_t assetIdx) = 0;
+        virtual AssetID GetAssetID(uint32_t assetIdx) = 0;
     };
 }

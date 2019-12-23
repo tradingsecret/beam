@@ -15,6 +15,7 @@
 #include <iostream>
 #include "../ecc_native.h"
 #include "../block_rw.h"
+#include "../shielded.h"
 #include "../treasury.h"
 #include "../../utility/serialize.h"
 #include "../serialization_adapters.h"
@@ -182,7 +183,7 @@ void SetRandom(Key::IKdf::Ptr& pPtr)
 {
 	uintBig hv;
 	SetRandom(hv);
-	ECC::HKdf::Create(pPtr, hv);
+	HKdf::Create(pPtr, hv);
 }
 
 
@@ -683,7 +684,7 @@ void TestCommitments()
 		Key::IDV kidv(100500, 15, Key::Type::Regular, 7, nScheme);
 
 		Scalar::Native sk;
-		ECC::Point::Native comm;
+		Point::Native comm;
 		beam::SwitchCommitment().Create(sk, comm, kdf, kidv);
 
 		sigma = Commitment(sk, kidv.m_Value);
@@ -969,14 +970,14 @@ void TestRangeProof(bool bCustomTag)
 
 	WriteSizeSerialized("In-Utxo", beam::Input());
 
-	beam::TxKernel txk;
+	beam::TxKernelStd txk;
 	txk.m_Fee = 50;
 	WriteSizeSerialized("Kernel(simple)", txk);
 }
 
 void TestMultiSigOutput()
 {
-    ECC::Amount amount = 5000;
+    Amount amount = 5000;
 
     beam::Key::IKdf::Ptr pKdf_A;
     beam::Key::IKdf::Ptr pKdf_B;
@@ -1053,7 +1054,7 @@ void TestMultiSigOutput()
 
     // B part3
     {
-		outp.m_pConfidential = std::make_unique<ECC::RangeProof::Confidential>();
+		outp.m_pConfidential = std::make_unique<RangeProof::Confidential>();
 		outp.m_pConfidential->m_Part1 = multiSig.m_Part1;
 		outp.m_pConfidential->m_Part2 = multiSig.m_Part2;
 		outp.m_pConfidential->m_Part3 = p3;
@@ -1088,7 +1089,7 @@ void TestMultiSigOutput()
     std::unique_ptr<beam::Output> pOutput(new beam::Output);
 	*pOutput = outp;
     {
-        ECC::Point::Native comm;
+        Point::Native comm;
         verify_test(pOutput->IsValid(g_hFork, comm));
     }
     Scalar::Native outputBlindingFactor;
@@ -1097,8 +1098,8 @@ void TestMultiSigOutput()
     offset += outputBlindingFactor;
 
     // kernel
-    ECC::Scalar::Native blindingExcessA;
-    ECC::Scalar::Native blindingExcessB;
+    Scalar::Native blindingExcessA;
+    Scalar::Native blindingExcessB;
     SetRandom(blindingExcessA);
     SetRandom(blindingExcessB);
     offset += blindingExcessA;
@@ -1107,52 +1108,36 @@ void TestMultiSigOutput()
     blindingExcessA = -blindingExcessA;
     blindingExcessB = -blindingExcessB;
 
-    ECC::Point::Native blindingExcessPublicA = Context::get().G * blindingExcessA;
-    ECC::Point::Native blindingExcessPublicB = Context::get().G * blindingExcessB;
+    Point::Native blindingExcessPublicA = Context::get().G * blindingExcessA;
+    Point::Native blindingExcessPublicB = Context::get().G * blindingExcessB;
 
-    ECC::Scalar::Native nonceA;
-    ECC::Scalar::Native nonceB;
+    Scalar::Native nonceA;
+    Scalar::Native nonceB;
     SetRandom(nonceA);
     SetRandom(nonceB);
-    ECC::Point::Native noncePublicA = Context::get().G * nonceA;
-    ECC::Point::Native noncePublicB = Context::get().G * nonceB;
-    ECC::Point::Native noncePublic = noncePublicA + noncePublicB;
+    Point::Native noncePublicA = Context::get().G * nonceA;
+    Point::Native noncePublicB = Context::get().G * nonceB;
+    Point::Native noncePublic = noncePublicA + noncePublicB;
 
-    ECC::Hash::Value message;
-    std::unique_ptr<beam::TxKernel> pKernel(new beam::TxKernel);
+    std::unique_ptr<beam::TxKernelStd> pKernel(new beam::TxKernelStd);
     pKernel->m_Fee = 0;
     pKernel->m_Height.m_Min = 100;
     pKernel->m_Height.m_Max = 220;
     pKernel->m_Commitment = blindingExcessPublicA + blindingExcessPublicB;
-    pKernel->get_Hash(message);
+    pKernel->UpdateID();
+	const Hash::Value& message = pKernel->m_Internal.m_ID;
 
-    ECC::Signature::MultiSig multiSigKernel;
-    ECC::Scalar::Native partialSignatureA;
-    ECC::Scalar::Native partialSignatureB;
+	pKernel->m_Signature.m_NoncePub = noncePublic;
 
-    multiSigKernel.m_Nonce = nonceA;
-    multiSigKernel.m_NoncePub = noncePublic;
-    multiSigKernel.SignPartial(partialSignatureA, message, blindingExcessA);
-    {
-        // test Signature
-        Signature peerSig;
-        peerSig.m_NoncePub = noncePublic;
-        peerSig.m_k = partialSignatureA;
-        verify_test(peerSig.IsValidPartial(message, noncePublicA, blindingExcessPublicA));
-    }
+	pKernel->m_Signature.SignPartial(message, blindingExcessA, nonceA);
+	verify_test(pKernel->m_Signature.IsValidPartial(message, noncePublicA, blindingExcessPublicA));
+	Scalar::Native partialSignatureA = pKernel->m_Signature.m_k;
 
-    multiSigKernel.m_Nonce = nonceB;
-    multiSigKernel.SignPartial(partialSignatureB, message, blindingExcessB);
-    {
-        // test Signature
-        Signature peerSig;
-        peerSig.m_NoncePub = noncePublic;
-        peerSig.m_k = partialSignatureB;
-        verify_test(peerSig.IsValidPartial(message, noncePublicB, blindingExcessPublicB));
-    }
+	pKernel->m_Signature.SignPartial(message, blindingExcessB, nonceB);
+	verify_test(pKernel->m_Signature.IsValidPartial(message, noncePublicB, blindingExcessPublicB));
+	Scalar::Native partialSignatureB = pKernel->m_Signature.m_k;
 
     pKernel->m_Signature.m_k = partialSignatureA + partialSignatureB;
-    pKernel->m_Signature.m_NoncePub = noncePublic;
 
     // create transaction
     beam::Transaction transaction;
@@ -1246,7 +1231,7 @@ struct TransactionMaker
 
 	Peer m_pPeers[2]; // actually can be more
 
-	void CoSignKernel(beam::TxKernel& krn, const Hash::Value& hvLockImage, bool is_trezor_debug = false)
+	void CoSignKernel(beam::TxKernelStd& krn, bool is_trezor_debug = false)
 	{
 		// 1st pass. Public excesses and Nonces are summed.
 		Scalar::Native pX[_countof(m_pPeers)];
@@ -1265,17 +1250,11 @@ struct TransactionMaker
 
 		m_Trans.m_Offset = offset;
 
-		for (size_t i = 0; i < krn.m_vNested.size(); i++)
-		{
-			Point::Native ptNested;
-			verify_test(ptNested.Import(krn.m_vNested[i]->m_Commitment));
-			kG += Point::Native(ptNested);
-		}
-
 		krn.m_Commitment = kG;
+		krn.m_Signature.m_NoncePub = xG;
 
-		Hash::Value msg;
-		krn.get_ID(msg, &hvLockImage);
+		krn.UpdateID();
+		const Hash::Value& msg = krn.m_Internal.m_ID;
 
 		// 2nd pass. Signing. Total excess is the signature public key.
 		Scalar::Native kSig = Zero;
@@ -1284,47 +1263,42 @@ struct TransactionMaker
 		{
 			Peer& p = m_pPeers[i];
 
-			Signature::MultiSig msig;
-			msig.m_Nonce = pX[i];
-			msig.m_NoncePub = xG;
-
-			Scalar::Native k;
-			msig.SignPartial(k, msg, p.m_k);
-
-			kSig += k;
+			krn.m_Signature.SignPartial(msg, p.m_k, pX[i]);
+			kSig += krn.m_Signature.m_k;
 
 			p.m_k = Zero; // signed, prepare for next tx
 		}
 
-		krn.m_Signature.m_NoncePub = xG;
 		krn.m_Signature.m_k = kSig;
 	}
 
 	void CreateTxKernel(std::vector<beam::TxKernel::Ptr>& lstTrg, Amount fee, std::vector<beam::TxKernel::Ptr>& lstNested, bool bEmitCustomTag, bool bNested, bool is_trezor_debug = false)
 	{
-		std::unique_ptr<beam::TxKernel> pKrn(new beam::TxKernel);
+		std::unique_ptr<beam::TxKernelStd> pKrn(new beam::TxKernelStd);
 		pKrn->m_Fee = fee;
+		pKrn->m_Height.m_Min = g_hFork;
 		pKrn->m_CanEmbed = bNested;
 		pKrn->m_vNested.swap(lstNested);
 
 		// hashlock
-		pKrn->m_pHashLock.reset(new beam::TxKernel::HashLock);
+		pKrn->m_pHashLock.reset(new beam::TxKernelStd::HashLock);
 		//pKrn->m_pHashLock.release();
 
-		uintBig hlPreimage;
-		SetRandom(hlPreimage, is_trezor_debug);
+		beam::TxKernelStd::HashLock hl;
+		SetRandom(hl.m_Value, is_trezor_debug);
 
-		Hash::Value hvLockImage;
-		Hash::Processor() << hlPreimage >> hvLockImage;
+		pKrn->m_pHashLock->m_IsImage = true;
+		pKrn->m_pHashLock->m_Value = hl.get_Image(pKrn->m_pHashLock->m_Value);
 
 		if (bEmitCustomTag)
 		{
 			// emit some asset
-			Scalar::Native skAsset;
+			Scalar::Native sk, skAsset;
 			beam::AssetID aid;
 			Amount valAsset = 4431;
 
-			SetRandom(skAsset, is_trezor_debug);
+			SetRandom(sk, is_trezor_debug); // excess
+			SetRandom(skAsset, is_trezor_debug); // asset sk
 			beam::proto::Sk2Pk(aid, skAsset);
 
 			if (beam::Rules::get().CA.Deposit)
@@ -1332,28 +1306,31 @@ struct TransactionMaker
 
 			m_pPeers[0].AddOutput(m_Trans, valAsset, m_Kdf, &aid, is_trezor_debug); // output UTXO to consume the created asset
 
-			std::unique_ptr<beam::TxKernel> pKrnEmission(new beam::TxKernel);
-			pKrnEmission->m_AssetEmission = valAsset;
-			pKrnEmission->m_Commitment.m_X = aid;
-			pKrnEmission->m_Commitment.m_Y = 0;
-			pKrnEmission->Sign(skAsset);
+			beam::TxKernelAssetEmit::Ptr pKrnEmission(new beam::TxKernelAssetEmit);
+			pKrnEmission->m_Height.m_Min = g_hFork;
+			pKrnEmission->m_CanEmbed = bNested;
+			pKrnEmission->m_AssetID = aid;
+			pKrnEmission->m_Value = valAsset;
+
+			pKrnEmission->Sign(sk, skAsset);
 
 			lstTrg.push_back(std::move(pKrnEmission));
 
-			skAsset = -skAsset;
-			m_pPeers[0].m_k += skAsset;
+			sk = -sk;
+			m_pPeers[0].m_k += sk;
 		}
 
-		CoSignKernel(*pKrn, hvLockImage, is_trezor_debug);
-
+		CoSignKernel(*pKrn, is_trezor_debug);
 
 		Point::Native exc;
-		beam::AmountBig::Type fee2;
-		verify_test(!pKrn->IsValid(g_hFork, fee2, exc)); // should not pass validation unless correct hash preimage is specified
+		pKrn->m_pHashLock->m_IsImage = false;
+		pKrn->UpdateID();
+		verify_test(!pKrn->IsValid(g_hFork, exc)); // should not pass validation unless correct hash preimage is specified
 
 		// finish HL: add hash preimage
-		pKrn->m_pHashLock->m_Preimage = hlPreimage;
-		verify_test(pKrn->IsValid(g_hFork, fee2, exc));
+		pKrn->m_pHashLock->m_Value = hl.m_Value;
+		pKrn->UpdateID();
+		verify_test(pKrn->IsValid(g_hFork, exc));
 
 		lstTrg.push_back(std::move(pKrn));
 	}
@@ -1395,7 +1372,7 @@ void TestTransaction()
 	beam::TxBase::Context ctx(pars);
 	ctx.m_Height.m_Min = g_hFork;
 	verify_test(tm.m_Trans.IsValid(ctx));
-	verify_test(ctx.m_Fee == beam::AmountBig::Type(fee1 + fee2));
+	verify_test(ctx.m_Stats.m_Fee == beam::AmountBig::Type(fee1 + fee2));
 }
 
 struct IHWWallet
@@ -1570,23 +1547,23 @@ struct HWWalletEmulator
 
 
 		// Calculate the kernelID
-		beam::TxKernel krn;
+		beam::TxKernelStd krn;
 		krn.m_Height = tx.m_Height;
 		krn.m_Fee = tx.m_Fee;
 		krn.m_Commitment = tx.m_KernelCommitment;
 
-		Hash::Value krnID;
-		krn.get_ID(krnID);
+		krn.UpdateID();
+		const Hash::Value& krnID = krn.m_Internal.m_ID;
 
-		// Create partial signature
-
-		Signature::MultiSig msig;
-		msig.m_NoncePub.Import(tx.m_KernelNonce);
-
-		msig.m_Nonce = m_pNonces[tx.m_iNonce];
+		// fetch nonce
+		Scalar::Native nonce = m_pNonces[tx.m_iNonce];
 		Regenerate(tx.m_iNonce);
 
-		msig.SignPartial(res, krnID, skTotal);
+		// Create partial signature
+		krn.m_Signature.m_NoncePub = tx.m_KernelNonce;
+		krn.m_Signature.SignPartial(krnID, skTotal, nonce);
+
+		res = krn.m_Signature.m_k;
 
 		return true; // finito!
 	}
@@ -1598,7 +1575,7 @@ struct MyWallet
 	IHWWallet& m_HW;
 
 	uint32_t m_iSlot; // slot selected for the transaction
-	beam::TxKernel m_Kernel;
+	beam::TxKernelStd m_Kernel;
 
 	uint64_t m_nLastCoinIndex = 0;
 
@@ -1743,10 +1720,12 @@ void TestTransactionHW()
 	mw1.m_Kernel.m_Signature.m_k = k1;
 	mw2.m_Kernel.m_Signature.m_k = mw1.m_Kernel.m_Signature.m_k;
 
+	mw1.m_Kernel.UpdateID();
+	mw2.m_Kernel.UpdateID();
+
 	{
-		beam::AmountBig::Type fees;
 		Point::Native exc;
-		verify_test(mw1.m_Kernel.IsValid(g_hFork, fees, exc));
+		verify_test(mw1.m_Kernel.IsValid(g_hFork, exc));
 	}
 
 	// merge txs
@@ -1758,9 +1737,8 @@ void TestTransactionHW()
 	txFull.m_Offset = Zero;
 	txFull.Normalize();
 
-	beam::TxKernel::Ptr pKrn(new beam::TxKernel);
-	*pKrn = mw1.m_Kernel;
-	txFull.m_vKernels.push_back(std::move(pKrn));
+	txFull.m_vKernels.emplace_back();
+	mw1.m_Kernel.Clone(txFull.m_vKernels.back());
 
 	Scalar::Native offs = mw1.m_Offset;
 	offs += mw2.m_Offset;
@@ -2193,7 +2171,6 @@ void TestLelantus()
 
 	beam::Lelantus::Proof proof;
 	proof.m_Cfg = cfg;
-	beam::Lelantus::Proof::Output outp;
 	beam::Lelantus::Prover p(lst, proof);
 
 	p.m_Witness.V.m_V = 100500;
@@ -2216,7 +2193,7 @@ void TestLelantus()
 
 	uint32_t t = beam::GetTime_ms();
 
-	p.Generate(outp, Zero, oracle);
+	p.Generate(Zero, oracle);
 
 	printf("\tProof time = %u ms\n", beam::GetTime_ms() - t);
 
@@ -2238,7 +2215,7 @@ void TestLelantus()
 	}
 	MyBatch bc;
 
-	std::vector<ECC::Scalar::Native> vKs;
+	std::vector<Scalar::Native> vKs;
 	vKs.resize(N);
 
 	bool bSuccess = true;
@@ -2247,14 +2224,14 @@ void TestLelantus()
 	{
 		const uint32_t nCycles = j ? 1 : 11;
 
-		memset0(&vKs.front(), sizeof(ECC::Scalar::Native) * vKs.size());
+		memset0(&vKs.front(), sizeof(Scalar::Native) * vKs.size());
 
 		t = beam::GetTime_ms();
 
 		for (uint32_t i = 0; i < nCycles; i++)
 		{
 			Oracle o2;
-			if (!proof.IsValid(bc, o2, outp, &vKs.front()))
+			if (!proof.IsValid(bc, o2, &vKs.front()))
 				bSuccess = false;
 		}
 
@@ -2276,32 +2253,44 @@ void TestLelantusKeys()
 	SetRandom(pGen);
 	SetRandom(pSer);
 
-	beam::Output::Shielded::PublicGen gen;
+	beam::ShieldedTxo::PublicGen gen;
 	gen.m_pGen = pGen;
 	gen.m_pSer = pSer;
-	SetRandom(gen.m_Owner);
 
-	beam::Output::Shielded::Viewer viewer;
+	beam::ShieldedTxo::Viewer viewer;
 	viewer.m_pGen = pGen;
 	viewer.m_pSer = pSer;
 
-	beam::Output::Shielded::Data d1;
+	beam::ShieldedTxo::Data d1;
 	d1.m_hScheme = beam::Rules::get().pForks[2].m_Height;
 	d1.m_Value = 115;
 
 	Hash::Value nonce;
 	SetRandom(nonce);
 
-	beam::Output outp;
-	d1.Generate(outp, gen, nonce);
+	beam::ShieldedTxo txo;
+	{
+		Oracle oracle;
+		d1.Generate(txo, oracle, gen, nonce);
+	}
 
-	ECC::Point::Native pt;
-	verify_test(pt.Import(outp.m_Commitment));
-	verify_test(outp.IsValid(d1.m_hScheme, pt));
+	Point::Native pt;
+	verify_test(pt.Import(txo.m_Commitment));
 
-	beam::Output::Shielded::Data d2;
+	verify_test(txo.m_Serial.IsValid());
+
+	{
+		Oracle oracle;
+		verify_test(txo.m_RangeProof.IsValid(pt, oracle));
+	}
+
+	beam::ShieldedTxo::Data d2;
 	d2.m_hScheme = d1.m_hScheme;
-	verify_test(d2.Recover(outp, viewer));
+
+	{
+		Oracle oracle;
+		verify_test(d2.Recover(txo, oracle, viewer));
+	}
 
 }
 
@@ -2341,24 +2330,27 @@ void TestAssetEmission()
 	tx.m_vOutputs.push_back(std::move(pOutp));
 	kOffset += -sk;
 
-	beam::TxKernel::Ptr pKrn(new beam::TxKernel);
+	beam::TxKernelStd::Ptr pKrn(new beam::TxKernelStd);
 	pKdf->DeriveKey(sk, beam::Key::ID(23123, beam::Key::Type::Kernel));
-	pKrn->m_Commitment = ECC::Context::get().G * sk;
+	pKrn->m_Commitment = Context::get().G * sk;
 	pKrn->m_Fee = fee;
+	pKrn->m_Height.m_Min = hScheme;
 	pKrn->Sign(sk);
 	tx.m_vKernels.push_back(std::move(pKrn));
 	kOffset += -sk;
 
-	pKrn.reset(new beam::TxKernel);
-	//pKrn->m_Commitment = ECC::Context::get().G * skAssetSk;
-	pKrn->m_Commitment.m_X = assetID;
-	pKrn->m_Commitment.m_Y = 0;
-	pKrn->m_AssetEmission  = -static_cast<beam::AmountSigned>(kidvInpAsset.m_Value);
-	pKrn->Sign(skAssetSk);
-	tx.m_vKernels.push_back(std::move(pKrn));
-	kOffset += -skAssetSk;
+	beam::TxKernelAssetEmit::Ptr pKrnAsset(new beam::TxKernelAssetEmit);
+	pKdf->DeriveKey(sk, beam::Key::ID(73123, beam::Key::Type::Kernel));
+	pKrnAsset->m_AssetID = assetID;
+	pKrnAsset->m_Value = -static_cast<beam::AmountSigned>(kidvInpAsset.m_Value);
+	pKrnAsset->m_Height.m_Min = hScheme;
+	pKrnAsset->Sign(sk, skAssetSk);
+	tx.m_vKernels.push_back(std::move(pKrnAsset));
+	kOffset += -sk;
 
 	tx.m_Offset = kOffset;
+
+	tx.Normalize();
 
 	beam::Transaction::Context::Params pars;
 	beam::Transaction::Context ctx(pars);
@@ -2418,8 +2410,8 @@ void TestTransactionHWSingular()
     mw1.m_Offset = (uint32_t)3;
 
 #if TREZOR_DEBUG == 1
-    printf("Kernel params for TX sign:\n\tFee: %ld\n\tMin_height: %ld; Max_height: %ld\n\tAsset_emission: %ld\n",
-           (long)mw1.m_Kernel.m_Fee, (long)mw1.m_Kernel.m_Height.m_Min, (long)mw1.m_Kernel.m_Height.m_Max, (long)mw1.m_Kernel.m_AssetEmission);
+    printf("Kernel params for TX sign:\n\tFee: %ld\n\tMin_height: %ld; Max_height: %ld\n",
+           (long)mw1.m_Kernel.m_Fee, (long)mw1.m_Kernel.m_Height.m_Min, (long)mw1.m_Kernel.m_Height.m_Max);
     char point_str[64];
     mw1.m_Kernel.m_Signature.m_NoncePub.m_X.Print(point_str);
     printf("\tNonce pub x: %s\n", point_str);

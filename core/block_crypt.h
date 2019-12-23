@@ -146,6 +146,9 @@ namespace beam
 		bool AllowPublicUtxos = false;
 		bool FakePoW = false;
 
+		Height MaxKernelValidityDH = 1440 * 30; // past Fork2
+		// if kernel has higher lifetime - its max height is implicitly decreased
+
 		ECC::Hash::Value Prehistoric; // Prev hash of the 1st block
 		ECC::Hash::Value TreasuryChecksum;
 
@@ -202,12 +205,27 @@ namespace beam
 		void Recover(ECC::Point::Native& comm, Key::IPKdf&, const Key::IDV&) const;
 	};
 
+	struct TxStats
+	{
+		AmountBig::Type m_Fee;
+		AmountBig::Type m_Coinbase;
+
+		uint64_t m_Kernels;
+		uint64_t m_Inputs; // all types
+		uint64_t m_Outputs; // all types
+		uint64_t m_InputsShielded;
+		uint64_t m_OutputsShielded;
+
+		TxStats() { Reset(); }
+
+		void Reset();
+		void operator += (const TxStats&);
+	};
+
 	struct TxElement
 	{
 		ECC::Point m_Commitment;
-
 		int cmp(const TxElement&) const;
-		COMPARISON_VIA_CMP
 	};
 
 	struct Input
@@ -255,17 +273,6 @@ namespace beam
 			static const uint32_t s_EntriesMax = 20; // if this is the size of the vector - the result is probably trunacted
 		};
 
-		struct SpendProof
-			:public Lelantus::Proof
-		{
-			TxoID m_WindowEnd; // ID of the 1st element outside the window
-
-			int cmp(const SpendProof&) const;
-			COMPARISON_VIA_CMP
-		};
-
-		std::unique_ptr<SpendProof> m_pSpendProof;
-
 		void get_ShieldedID(Merkle::Hash&) const;
 
 		Input() {}
@@ -273,11 +280,11 @@ namespace beam
 			:TxElement(v)
 		{
 			m_Internal = v.m_Internal;
-			m_pSpendProof = std::move(v.m_pSpendProof);
 		}
 
+		void AddStats(TxStats&) const;
+
 		void operator = (const Input&);
-		int cmp(const Input&) const;
 		COMPARISON_VIA_CMP
 	};
 
@@ -303,78 +310,9 @@ namespace beam
 
 		static const Amount s_MinimumValue = 1;
 
-		struct Shielded
-		{
-			ECC::Point m_SerialPub; // blinded
-			ECC::Signature m_Signature;
-			ECC::Scalar m_kSer;
-
-			bool IsValid() const;
-
-			int cmp(const Shielded&) const;
-			COMPARISON_VIA_CMP
-
-			struct PublicGen
-			{
-				Key::IPKdf::Ptr m_pGen;
-				Key::IPKdf::Ptr m_pSer;
-
-				PeerID m_Owner;
-				void get_OwnerNonce(ECC::Hash::Value&, const ECC::Scalar::Native&) const;
-			};
-
-			struct Viewer
-			{
-				Key::IKdf::Ptr m_pGen;
-				Key::IPKdf::Ptr m_pSer;
-
-				void FromOwner(Key::IPKdf&);
-				static void GenerateSerPrivate(Key::IKdf::Ptr&, Key::IKdf&);
-
-			private:
-				static void GenerateSerSrc(ECC::Hash::Value&, Key::IPKdf&);
-			};
-
-			struct Data
-			{
-				ECC::Scalar::Native m_kSerG; // blinding factor for the serial
-				ECC::Scalar::Native m_kOutG; // blinding factor for the Output
-				Amount m_Value;
-				Height m_hScheme = 0; // must set
-
-				// Generates Shielded from nonce
-				// Sets both m_kOutG and m_kSerG
-				void GenerateS(Shielded&, const PublicGen&, const ECC::Hash::Value& nonce);
-				void GenerateO(Output&, const PublicGen&); // generate UTXO from m_kOutG
-				void Generate(Output&, const PublicGen&, const ECC::Hash::Value& nonce); // generate everything nonce
-
-				bool Recover(const Output&, const Viewer&);
-
-				struct HashTxt;
-
-				void GetSpendKey(ECC::Scalar::Native&, Key::IKdf& ser) const;
-				void GetSpendPKey(ECC::Point::Native&, Key::IPKdf& ser) const;
-
-			private:
-				static void GenerateS1(Key::IPKdf& gen, const ECC::Point& ptShared, ECC::Scalar::Native& nG, ECC::Scalar::Native& nJ);
-				void GetSerialPreimage(ECC::Hash::Value& res) const;
-				void GetSerial(ECC::Scalar::Native& kJ, Key::IPKdf& ser) const;
-				void ToSk(Key::IPKdf& gen);
-				void GetOutputSeed(Key::IPKdf& gen, ECC::Hash::Value&) const;
-				static void GetDH(ECC::Hash::Value&, const ECC::Point&);
-				static void DoubleBlindedCommitment(ECC::Point::Native&, const ECC::Scalar::Native& kG, const ECC::Scalar::Native& kJ);
-				static bool IsEqual(const ECC::Point::Native& pt0, const ECC::Point& pt1);
-				static bool IsEqual(const ECC::Point::Native& pt0, const ECC::Point::Native& pt1);
-			};
-
-		private:
-			void get_Hash(ECC::Hash::Value&) const;
-		};
-
 		// one of the following *must* be specified
 		std::unique_ptr<ECC::RangeProof::Confidential>	m_pConfidential;
 		std::unique_ptr<ECC::RangeProof::Public>		m_pPublic;
-		std::unique_ptr<Shielded> m_pShielded; // for shielded output, complements the confidential
 
 		void Create(Height hScheme, ECC::Scalar::Native&, Key::IKdf& coinKdf, const Key::IDV&, Key::IPKdf& tagKdf, bool bPublic = false);
 
@@ -383,6 +321,8 @@ namespace beam
 
 		bool IsValid(Height hScheme, ECC::Point::Native& comm) const;
 		Height get_MinMaturity(Height h) const; // regardless to the explicitly-overridden
+
+		void AddStats(TxStats&) const;
 
 		void operator = (const Output&);
 		int cmp(const Output&) const;
@@ -394,27 +334,119 @@ namespace beam
 
 	inline bool operator < (const Output::Ptr& a, const Output::Ptr& b) { return *a < *b; }
 
+	struct ShieldedTxo
+	{
+		struct Serial
+		{
+			ECC::Point m_SerialPub; // blinded
+			ECC::SignatureGeneralized<2> m_Signature;
+
+			bool IsValid() const;
+			void get_Hash(ECC::Hash::Value&) const;
+		};
+
+
+		ECC::Point m_Commitment;
+		ECC::RangeProof::Confidential m_RangeProof;
+		Serial m_Serial;
+
+		struct PublicGen;
+		struct Viewer;
+		struct Data;
+	};
+
+#define BeamKernelsAll(macro) \
+	macro(1, Std) \
+	macro(2, AssetEmit) \
+	macro(3, ShieldedOutput) \
+	macro(4, ShieldedInput)
+
+#define THE_MACRO(id, name) struct TxKernel##name;
+	BeamKernelsAll(THE_MACRO)
+#undef THE_MACRO
+
 	struct TxKernel
-		:public TxElement
 	{
 		typedef std::unique_ptr<TxKernel> Ptr;
 
-		// Mandatory
-		ECC::Signature	m_Signature;	// For the whole body, including nested kernels
+		struct Subtype
+		{
+			enum Enum {
+#define THE_MACRO(id, name) name = id,
+				BeamKernelsAll(THE_MACRO)
+#undef THE_MACRO
+			};
+		};
+
 		Amount			m_Fee;			// can be 0 (for instance for coinbase transactions)
 		HeightRange		m_Height;
-		AmountSigned	m_AssetEmission; // in case it's non-zero - the kernel commitment is the AssetID
 		bool			m_CanEmbed;
+
+		struct Internal
+		{
+			Merkle::Hash m_ID; // unique kernel identifier in the system.
+		} m_Internal;
 
 		TxKernel()
 			:m_Fee(0)
-			,m_AssetEmission(0)
 			,m_CanEmbed(false)
 		{}
 
+		std::vector<Ptr> m_vNested; // nested kernels, included in the signature.
+
+		static const uint32_t s_MaxRecursionDepth = 2;
+
+		static void TestRecursion(uint32_t n)
+		{
+			if (n > s_MaxRecursionDepth)
+				throw std::runtime_error("recursion too deep");
+		}
+
+		virtual ~TxKernel() {}
+		virtual Subtype::Enum get_Subtype() const = 0;
+		virtual void UpdateID() = 0;
+		virtual bool IsValid(Height hScheme, ECC::Point::Native& exc, const TxKernel* pParent = nullptr) const = 0;
+		virtual void AddStats(TxStats&) const; // including self and nested
+		virtual int cmp_Subtype(const TxKernel&) const;
+		virtual void Clone(Ptr&) const = 0;
+
+		struct LongProof; // legacy
+
+		int cmp(const TxKernel&) const;
+		COMPARISON_VIA_CMP
+
+
+		struct IWalker
+		{
+			virtual bool OnKrn(const TxKernel&) = 0;
+
+			bool Process(const std::vector<TxKernel::Ptr>&);
+			bool Process(const TxKernel&);
+		};
+
+	protected:
+		void HashBase(ECC::Hash::Processor&) const;
+		void HashNested(ECC::Hash::Processor&) const;
+		void CopyFrom(const TxKernel&);
+		bool IsValidBase(Height hScheme, ECC::Point::Native& exc, const TxKernel* pParent, ECC::Point::Native* pComm = nullptr) const;
+	private:
+		void operator = (const TxKernel&);
+	};
+
+	struct TxKernelStd
+		:public TxKernel
+	{
+		typedef std::unique_ptr<TxKernelStd> Ptr;
+
+		ECC::Point		m_Commitment;	// aggregated, including nested kernels
+		ECC::Signature	m_Signature;	// For the whole body, including nested kernels
+
 		struct HashLock
 		{
-			ECC::uintBig m_Preimage;
+			ECC::Hash::Value m_Value;
+			bool m_IsImage = false; // not serialized. Used only internally to get the kernel ID after it'd be substituted
+
+			const ECC::Hash::Value& get_Image(ECC::Hash::Value& hv) const;
 
 			int cmp(const HashLock&) const;
 			COMPARISON_VIA_CMP
@@ -433,33 +465,90 @@ namespace beam
 
 		std::unique_ptr<RelativeLock> m_pRelativeLock;
 
-		std::vector<Ptr> m_vNested; // nested kernels, included in the signature.
-
-		static const uint32_t s_MaxRecursionDepth = 2;
-
-		static void TestRecursion(uint32_t n)
-		{
-			if (n > s_MaxRecursionDepth)
-				throw std::runtime_error("recursion too deep");
-		}
-
-		void get_Hash(Merkle::Hash&, const ECC::Hash::Value* pLockImage = NULL) const; // for signature. Contains all, including the m_Commitment (i.e. the public key)
-		void get_ID(Merkle::Hash&, const ECC::Hash::Value* pLockImage = NULL) const; // unique kernel identifier in the system.
-
-		bool IsValid(Height hScheme, AmountBig::Type& fee, ECC::Point::Native& exc) const;
+		virtual ~TxKernelStd() {}
+		virtual Subtype::Enum get_Subtype() const override;
+		virtual void UpdateID() override;
+		virtual bool IsValid(Height hScheme, ECC::Point::Native& exc, const TxKernel* pParent = nullptr) const override;
+		virtual int cmp_Subtype(const TxKernel&) const override;
+		virtual void Clone(TxKernel::Ptr&) const override;
 
 		void Sign(const ECC::Scalar::Native&); // suitable for aux kernels, created by single party
+	};
 
-		struct LongProof; // legacy
+	struct TxKernelNonStd
+		:public TxKernel
+	{
+		Merkle::Hash m_Msg; // message to sign, diffetent from ID
 
-		void operator = (const TxKernel&);
-		int cmp(const TxKernel&) const;
-		COMPARISON_VIA_CMP
+		virtual void UpdateID() override;
+		void UpdateMsg();
+		void MsgToID();
 
-		size_t get_TotalCount() const; // including self and nested
+	protected:
+		virtual void HashSelfForMsg(ECC::Hash::Processor&) const = 0;
+		virtual void HashSelfForID(ECC::Hash::Processor&) const = 0;
+		void CopyFrom(const TxKernelNonStd&);
+	};
 
-	private:
-		bool Traverse(ECC::Hash::Value&, AmountBig::Type*, ECC::Point::Native*, const TxKernel* pParent, const ECC::Hash::Value* pLockImage, const Height* pScheme) const;
+	struct TxKernelAssetEmit
+		:public TxKernelNonStd
+	{
+		typedef std::unique_ptr<TxKernelAssetEmit> Ptr;
+
+		AssetID m_AssetID;
+		AmountSigned m_Value;
+
+		ECC::Point m_Commitment;	// aggregated, including nested kernels
+		ECC::SignatureGeneralized<1> m_Signature;
+
+		TxKernelAssetEmit()
+			:m_Value(0)
+		{}
+
+		void Sign(const ECC::Scalar::Native& sk, const ECC::Scalar::Native& skAsset); // suitable for aux kernels, created by single party
+
+		virtual ~TxKernelAssetEmit() {}
+		virtual Subtype::Enum get_Subtype() const override;
+		virtual bool IsValid(Height hScheme, ECC::Point::Native& exc, const TxKernel* pParent = nullptr) const override;
+		virtual void Clone(TxKernel::Ptr&) const override;
+	protected:
+		virtual void HashSelfForMsg(ECC::Hash::Processor&) const override;
+		virtual void HashSelfForID(ECC::Hash::Processor&) const override;
+	};
+
+	struct TxKernelShieldedOutput
+		:public TxKernelNonStd
+	{
+		typedef std::unique_ptr<TxKernelShieldedOutput> Ptr;
+
+		ShieldedTxo m_Txo;
+
+		virtual ~TxKernelShieldedOutput() {}
+		virtual Subtype::Enum get_Subtype() const override;
+		virtual bool IsValid(Height hScheme, ECC::Point::Native& exc, const TxKernel* pParent = nullptr) const override;
+		virtual void AddStats(TxStats&) const override;
+		virtual void Clone(TxKernel::Ptr&) const override;
+	protected:
+		virtual void HashSelfForMsg(ECC::Hash::Processor&) const override;
+		virtual void HashSelfForID(ECC::Hash::Processor&) const override;
+	};
+
+	struct TxKernelShieldedInput
+		:public TxKernelNonStd
+	{
+		typedef std::unique_ptr<TxKernelShieldedInput> Ptr;
+
+		TxoID m_WindowEnd; // ID of the 1st element outside the window
+		Lelantus::Proof m_SpendProof;
+
+		virtual ~TxKernelShieldedInput() {}
+		virtual Subtype::Enum get_Subtype() const override;
+		virtual bool IsValid(Height hScheme, ECC::Point::Native& exc, const TxKernel* pParent = nullptr) const override;
+		virtual void AddStats(TxStats&) const override;
+		virtual void Clone(TxKernel::Ptr&) const override;
+	protected:
+		virtual void HashSelfForMsg(ECC::Hash::Processor&) const override;
+		virtual void HashSelfForID(ECC::Hash::Processor&) const override;
 	};
 
 	inline bool operator < (const TxKernel::Ptr& a, const TxKernel::Ptr& b) { return *a < *b; }
@@ -488,7 +577,7 @@ namespace beam
 
 			void Compare(IReader&& rOther, bool& bICover, bool& bOtherCovers);
 			size_t get_SizeNetto(); // account only for elements. Ignore offset and array sizes
-			void CalculateShielded(uint32_t& nIns, uint32_t& nOuts);
+			void AddStats(TxStats&);
 		};
 
 		struct IWriter
@@ -584,6 +673,7 @@ namespace beam
 			FeeSettings(); // defaults
 
 			Amount Calculate(const Transaction&) const;
+			Amount Calculate(const TxStats&) const;
 		};
 	};
 
@@ -828,11 +918,6 @@ namespace beam
 
 		struct Params
 		{
-			bool m_bBlockMode; // in 'block' mode the hMin/hMax on input denote the range of heights. Each element is verified wrt it independently.
-			// i.e. different elements may have non-overlapping valid range, and it's valid.
-			// Suitable for merged block validation
-
-			bool m_bVerifyOrder; // check the correct order, as well as elimination of spent outputs. On by default. Turned Off only for specific internal validations (such as treasury).
 			bool m_bAllowUnsignedOutputs; // allow outputs without signature (commitment only). Applicable for cut-through blocks only, outputs that are supposed to be consumed in the later block.
 
 			// for multi-tasking, parallel verification
@@ -845,9 +930,7 @@ namespace beam
 		const Params& m_Params;
 
 		ECC::Point::Native m_Sigma;
-
-		AmountBig::Type m_Fee;
-		AmountBig::Type m_Coinbase;
+		TxStats m_Stats;
 		HeightRange m_Height;
 
 		uint32_t m_iVerifier;
