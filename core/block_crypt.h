@@ -28,7 +28,7 @@ namespace beam
 	typedef ECC::Hash::Value PeerID;
 	typedef uint64_t BbsChannel;
 	typedef ECC::Hash::Value BbsMsgID;
-	typedef PeerID AssetID;
+	typedef uint64_t AssetID; // 1-based asset index. 0 is reserved for default asset (Beam)
 	typedef uint64_t TxoID;
 
 	using ECC::Key;
@@ -136,7 +136,7 @@ namespace beam
 
 		struct {
 			bool Enabled = false;
-			bool Deposit = true; // CA emission in exchange for beams. If not specified - the emission is free
+			Amount DepositForList = Coin * 1000;
 		} CA;
 
 		uint32_t MaxRollback = 1440; // 1 day roughly
@@ -194,10 +194,9 @@ namespace beam
 		void AddValue(ECC::Point::Native& comm, Amount) const;
 		static void get_Hash(ECC::Hash::Value&, const Key::IDV&);
 	public:
-		static ECC::Point::Native HGenFromAID(const AssetID& assetId);
 
 	    ECC::Point::Native m_hGen;
-		SwitchCommitment(const AssetID* pAssetID = nullptr);
+		SwitchCommitment(AssetID = 0);
 
 		void Create(ECC::Scalar::Native& sk, Key::IKdf&, const Key::IDV&) const;
 		void Create(ECC::Scalar::Native& sk, ECC::Point::Native& comm, Key::IKdf&, const Key::IDV&) const;
@@ -220,6 +219,38 @@ namespace beam
 
 		void Reset();
 		void operator += (const TxStats&);
+	};
+
+	struct AssetInfo
+	{
+		struct Base
+		{
+			AssetID m_ID;
+
+			Base(AssetID id = 0) :m_ID(id) {}
+
+			void get_Generator(ECC::Point::Native&) const;
+			void get_Generator(ECC::Point::Storage&) const;
+			void get_Generator(ECC::Point::Native&, ECC::Point::Storage&) const;
+		};
+
+		struct Data
+		{
+			AmountBig::Type m_Value;
+			PeerID m_Owner;
+
+			ByteBuffer m_Metadata;
+			static const uint32_t s_MetadataMaxSize = 1024 * 16; // 16K
+
+			void Reset();
+		};
+
+		struct Full
+			:public Base
+			,public Data
+		{
+			void get_Hash(ECC::Hash::Value&) const;
+		};
 	};
 
 	struct TxElement
@@ -302,7 +333,7 @@ namespace beam
 			:m_Coinbase(false)
 			,m_RecoveryOnly(false)
 			,m_Incubation(0)
-			,m_AssetID(Zero)
+			,m_AssetID(0)
 		{
 		}
 
@@ -339,15 +370,29 @@ namespace beam
 			ECC::Point m_SerialPub; // blinded
 			ECC::SignatureGeneralized<2> m_Signature;
 
-			bool IsValid() const;
+			bool IsValid(ECC::Point::Native&) const;
 			void get_Hash(ECC::Hash::Value&) const;
 		};
 
-		struct Description
+		struct DescriptionBase
 		{
+			Height m_Height;
+		};
+
+		struct DescriptionOutp
+			:public DescriptionBase
+		{
+			TxoID m_ID;
 			ECC::Point m_SerialPub; // blinded
 			ECC::Point m_Commitment;
-			TxoID m_ID;
+
+			void get_Hash(Merkle::Hash&) const;
+		};
+
+		struct DescriptionInp
+			:public DescriptionBase
+		{
+			ECC::Point m_SpendPk;
 
 			void get_Hash(Merkle::Hash&) const;
 		};
@@ -355,6 +400,9 @@ namespace beam
 		ECC::Point m_Commitment;
 		ECC::RangeProof::Confidential m_RangeProof;
 		Serial m_Serial;
+
+		void Prepare(ECC::Oracle&) const;
+		bool IsValid(ECC::Oracle&, ECC::Point::Native& comm, ECC::Point::Native& ser) const;
 
 		struct PublicGen;
 		struct Viewer;
@@ -365,7 +413,9 @@ namespace beam
 	macro(1, Std) \
 	macro(2, AssetEmit) \
 	macro(3, ShieldedOutput) \
-	macro(4, ShieldedInput)
+	macro(4, ShieldedInput) \
+	macro(5, AssetCreate) \
+	macro(6, AssetDestroy)
 
 #define THE_MACRO(id, name) struct TxKernel##name;
 	BeamKernelsAll(THE_MACRO)
@@ -496,22 +546,31 @@ namespace beam
 		void CopyFrom(const TxKernelNonStd&);
 	};
 
-	struct TxKernelAssetEmit
+	struct TxKernelAssetControl
 		:public TxKernelNonStd
+	{
+		PeerID m_Owner;
+
+		ECC::Point m_Commitment;	// aggregated, including nested kernels
+		ECC::SignatureGeneralized<1> m_Signature;
+
+		void Sign(const ECC::Scalar::Native& sk, const ECC::Scalar::Native& skAsset); // suitable for aux kernels, created by single party
+
+		virtual bool IsValid(Height hScheme, ECC::Point::Native& exc, const TxKernel* pParent = nullptr) const override;
+	protected:
+		void CopyFrom(const TxKernelAssetControl&);
+		virtual void HashSelfForMsg(ECC::Hash::Processor&) const override;
+		virtual void HashSelfForID(ECC::Hash::Processor&) const override;
+	};
+
+	struct TxKernelAssetEmit
+		:public TxKernelAssetControl
 	{
 		typedef std::unique_ptr<TxKernelAssetEmit> Ptr;
 
 		AssetID m_AssetID;
 		AmountSigned m_Value;
-
-		ECC::Point m_Commitment;	// aggregated, including nested kernels
-		ECC::SignatureGeneralized<1> m_Signature;
-
-		TxKernelAssetEmit()
-			:m_Value(0)
-		{}
-
-		void Sign(const ECC::Scalar::Native& sk, const ECC::Scalar::Native& skAsset); // suitable for aux kernels, created by single party
+		TxKernelAssetEmit() :m_Value(0) {}
 
 		virtual ~TxKernelAssetEmit() {}
 		virtual Subtype::Enum get_Subtype() const override;
@@ -519,7 +578,36 @@ namespace beam
 		virtual void Clone(TxKernel::Ptr&) const override;
 	protected:
 		virtual void HashSelfForMsg(ECC::Hash::Processor&) const override;
-		virtual void HashSelfForID(ECC::Hash::Processor&) const override;
+	};
+
+	struct TxKernelAssetCreate
+		:public TxKernelAssetControl
+	{
+		typedef std::unique_ptr<TxKernelAssetCreate> Ptr;
+
+		ByteBuffer m_MetaData;
+
+		virtual ~TxKernelAssetCreate() {}
+		virtual Subtype::Enum get_Subtype() const override;
+		virtual bool IsValid(Height hScheme, ECC::Point::Native& exc, const TxKernel* pParent = nullptr) const override;
+		virtual void Clone(TxKernel::Ptr&) const override;
+	protected:
+		virtual void HashSelfForMsg(ECC::Hash::Processor&) const override;
+	};
+
+	struct TxKernelAssetDestroy
+		:public TxKernelAssetControl
+	{
+		typedef std::unique_ptr<TxKernelAssetDestroy> Ptr;
+
+		AssetID m_AssetID;
+
+		virtual ~TxKernelAssetDestroy() {}
+		virtual Subtype::Enum get_Subtype() const override;
+		virtual bool IsValid(Height hScheme, ECC::Point::Native& exc, const TxKernel* pParent = nullptr) const override;
+		virtual void Clone(TxKernel::Ptr&) const override;
+	protected:
+		virtual void HashSelfForMsg(ECC::Hash::Processor&) const override;
 	};
 
 	struct TxKernelShieldedOutput
@@ -725,6 +813,25 @@ namespace beam
 		{
 			typedef HeightHash ID;
 
+			struct Evaluator
+				:public Merkle::IEvaluator
+			{
+				Height m_Height;
+
+				// The state Definition is defined as Hash[ History | Live ]
+				// Before Fork2: Live = Utxos
+				// Past Fork2: Live = Hash[ Utxos | Hash[Shielded | Assets] ]
+
+				bool get_Definition(Merkle::Hash&);
+				void GenerateProof(); // same as above, except it's used for proof generation, and the resulting hash is not evaluated
+
+				virtual bool get_History(Merkle::Hash&);
+				virtual bool get_Live(Merkle::Hash&);
+				virtual bool get_Utxos(Merkle::Hash&);
+				virtual bool get_Shielded(Merkle::Hash&);
+				virtual bool get_Assets(Merkle::Hash&);
+			};
+
 			struct Sequence
 			{
 				struct Prefix {
@@ -736,16 +843,9 @@ namespace beam
 				struct Element
 				{
 					Merkle::Hash	m_Kernels; // of this block only
-					Merkle::Hash	m_Definition; // Defined as Hash[ History | Utxos ]. If past fork2, then Utxos = Hash[ UtxoTree | Shielded ]
+					Merkle::Hash	m_Definition;
 					Timestamp		m_TimeStamp;
 					PoW				m_PoW;
-
-					// The following not only interprets the proof, but also verifies the knwon part of its structure.
-					bool IsValidProofUtxo(const ECC::Point&, const Input::Proof&) const;
-					bool IsValidProofShieldedTxo(const ShieldedTxo::Description&, const Merkle::HardProof&, TxoID nTotal) const;
-
-				private:
-					bool IsValidProofToDefinition(Merkle::Hash&, const Merkle::Proof&) const;
 				};
 			};
 
@@ -773,6 +873,11 @@ namespace beam
 				bool IsValidProofKernel(const TxKernel&, const TxKernel::LongProof&) const;
 				bool IsValidProofKernel(const Merkle::Hash& hvID, const TxKernel::LongProof&) const;
 
+				bool IsValidProofUtxo(const ECC::Point&, const Input::Proof&) const;
+				bool IsValidProofShieldedOutp(const ShieldedTxo::DescriptionOutp&, const Merkle::Proof&) const;
+				bool IsValidProofShieldedInp(const ShieldedTxo::DescriptionInp&, const Merkle::Proof&) const;
+				bool IsValidProofAsset(const AssetInfo::Full&, const Merkle::Proof&) const;
+
 				int cmp(const Full&) const;
 				COMPARISON_VIA_CMP
 
@@ -780,6 +885,10 @@ namespace beam
 
 			private:
 				void get_HashInternal(Merkle::Hash&, bool bTotal) const;
+				bool IsValidProofShielded(Merkle::Hash&, const Merkle::Proof&) const;
+
+				struct ProofVerifier;
+				struct ProofVerifierHard;
 			};
 
 			struct IHistory
