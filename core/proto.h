@@ -91,8 +91,8 @@ namespace proto {
     macro(ECC::Point, SpendPk)
 
 #define BeamNodeMsg_GetProofAsset(macro) \
-    macro(PeerID, Owner) \
-    macro(AssetID, Min)
+    macro(Asset::ID, AssetID) \
+    macro(PeerID, Owner)
 
 #define BeamNodeMsg_GetShieldedList(macro) \
     macro(TxoID, Id0) \
@@ -123,7 +123,7 @@ namespace proto {
     macro(Merkle::Proof, Proof)
 
 #define BeamNodeMsg_ProofAsset(macro) \
-    macro(AssetInfo::Full, Info) \
+    macro(Asset::Full, Info) \
     macro(Merkle::Proof, Proof)
 
 #define BeamNodeMsg_ShieldedList(macro) \
@@ -326,7 +326,7 @@ namespace proto {
 	{
 		static const uint32_t s_Max = 64; // will send more, if the remaining events are on the same height
 
-        typedef uintBig_t<ECC::uintBig::nBytes - sizeof(AssetID)> AuxBuf1;
+        typedef uintBig_t<ECC::uintBig::nBytes - sizeof(Asset::ID)> AuxBuf1;
 
 #pragma pack(push, 1)
 		struct Shielded
@@ -349,10 +349,11 @@ namespace proto {
 
 #pragma pack(pop)
 
-		Key::IDV m_Kidv;
+		Key::ID m_Kid;
+        Amount m_Value;
 		ShieldedDelta m_ShieldedDelta;
 		ECC::Point m_Commitment;
-        uintBigFor<AssetID>::Type m_AssetID;
+        uintBigFor<Asset::ID>::Type m_AssetID;
 
         AuxBuf1 m_Buf1; // for hystorical reasons
 
@@ -366,13 +367,16 @@ namespace proto {
 
 		uint8_t m_Flags;
 
+        void get_Cid(CoinID&) const;
+
 		template <typename Archive>
 		void serialize(Archive& ar)
 		{
 			ar
 				& m_Commitment
-				& m_Kidv
-				& m_AssetID
+				& m_Kid
+                & m_Value
+                & m_AssetID
                 & m_Buf1
 				& m_Height
 				& m_Maturity
@@ -426,8 +430,8 @@ namespace proto {
     inline void ZeroInit(ECC::Signature& x) { ZeroObject(x); }
     inline void ZeroInit(TxKernel::LongProof& x) { ZeroObject(x.m_State); }
 	inline void ZeroInit(BodyBuffers&) { }
-    inline void ZeroInit(AssetInfo::Data& x) { x.Reset(); }
-    inline void ZeroInit(AssetInfo::Full& x) { x.Reset(); }
+    inline void ZeroInit(Asset::Info& x) { x.Reset(); }
+    inline void ZeroInit(Asset::Full& x) { x.Reset(); }
 
     template <typename T> struct InitArg {
         typedef const T& TArg;

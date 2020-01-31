@@ -97,6 +97,7 @@ namespace beam {
 #define TblAssets_Owner			"Owner"
 #define TblAssets_Value			"Value"
 #define TblAssets_Data			"MetaData"
+#define TblAssets_LockHeight	"LockHeight"
 
 NodeDB::NodeDB()
 	:m_pDb(NULL)
@@ -340,7 +341,7 @@ void NodeDB::Open(const char* szPath)
 	if (bCreate)
 	{
 		Create();
-		ParamSet(ParamID::DbVer, &nVersionTop, NULL);
+		ParamIntSet(ParamID::DbVer, nVersionTop);
 	}
 	else
 	{
@@ -366,7 +367,7 @@ void NodeDB::Open(const char* szPath)
 			LOG_INFO() << "DB migrate from" << 20;
 			MigrateFrom20();
 
-			ParamSet(ParamID::DbVer, &nVersionTop, NULL);
+			ParamIntSet(ParamID::DbVer, nVersionTop);
 			// no break;
 
 		case nVersionTop:
@@ -502,6 +503,7 @@ void NodeDB::CreateTables20()
 		"[" TblAssets_ID			"] INTEGER NOT NULL PRIMARY KEY,"
 		"[" TblAssets_Owner			"] BLOB,"
 		"[" TblAssets_Data			"] BLOB,"
+		"[" TblAssets_LockHeight	"] INTEGER,"
 		"[" TblAssets_Value			"] BLOB)");
 
 	ExecQuick("CREATE INDEX [Idx" TblAssets "Own] ON [" TblAssets "] ([" TblAssets_Owner "])");
@@ -646,6 +648,11 @@ void NodeDB::ParamSet(uint32_t ID, const uint64_t* p0, const Blob* p1)
 	}
 }
 
+void NodeDB::ParamIntSet(uint32_t ID, uint64_t val)
+{
+	ParamSet(ID, &val, nullptr);
+}
+
 bool NodeDB::ParamGet(uint32_t ID, uint64_t* p0, Blob* p1, ByteBuffer* p2 /* = NULL */)
 {
 	Recordset rs(*this, Query::ParamGet, "SELECT " TblParams_Int "," TblParams_Blob " FROM " TblParams " WHERE " TblParams_ID "=?");
@@ -669,7 +676,7 @@ bool NodeDB::ParamGet(uint32_t ID, uint64_t* p0, Blob* p1, ByteBuffer* p2 /* = N
 	return true;
 }
 
-uint64_t NodeDB::ParamIntGetDef(int ID, uint64_t def /* = 0 */)
+uint64_t NodeDB::ParamIntGetDef(uint32_t ID, uint64_t def /* = 0 */)
 {
 	ParamGet(ID, &def, NULL);
 	return def;
@@ -1682,8 +1689,8 @@ bool NodeDB::get_Cursor(StateID& sid)
 
 void NodeDB::put_Cursor(const StateID& sid)
 {
-	ParamSet(ParamID::CursorRow, &sid.m_Row, NULL);
-	ParamSet(ParamID::CursorHeight, &sid.m_Height, NULL);
+	ParamIntSet(ParamID::CursorRow, sid.m_Row);
+	ParamIntSet(ParamID::CursorHeight, sid.m_Height);
 }
 
 void NodeDB::StateID::SetNull()
@@ -2409,23 +2416,21 @@ void NodeDB::UniqueDeleteStrict(const Blob& key)
 	TestChanged1Row();
 }
 
-const AssetID NodeDB::s_AssetEmpty0 = uint64_t(1) << 62;
+const Asset::ID NodeDB::s_AssetEmpty0 = Asset::s_MaxCount;
 
-bool NodeDB::AssetFindByOwner(AssetInfo::Full& ai)
+Asset::ID NodeDB::AssetFindByOwner(const PeerID& owner)
 {
-	Recordset rs(*this, Query::AssetFindOwner, "SELECT " TblAssets_ID "," TblAssets_Data "," TblAssets_Value " FROM " TblAssets " WHERE " TblAssets_Owner "=? AND " TblAssets_ID ">=? ORDER BY " TblAssets_ID " ASC LIMIT 1");
-	rs.put_As(0, ai.m_Owner);
-	rs.put(1, ai.m_ID);
+	Recordset rs(*this, Query::AssetFindOwner, "SELECT " TblAssets_ID " FROM " TblAssets " WHERE " TblAssets_Owner "=?");
+	rs.put_As(0, owner);
 	if (!rs.Step())
 		return false;
 
-	rs.get(0, ai.m_ID);
-	rs.get(1, ai.m_Metadata);
-	rs.get_As(2, ai.m_Value);
-	return true;
+	Asset::ID ret;
+	rs.get(0, ret);
+	return ret;
 }
 
-void NodeDB::AssetDeleteRaw(AssetID id)
+void NodeDB::AssetDeleteRaw(Asset::ID id)
 {
 	Recordset rs(*this, Query::AssetDel, "DELETE FROM " TblAssets " WHERE " TblAssets_ID "=?");
 	rs.put(0, id);
@@ -2433,9 +2438,9 @@ void NodeDB::AssetDeleteRaw(AssetID id)
 	TestChanged1Row();
 }
 
-void NodeDB::AssetInsertRaw(AssetID id, const AssetInfo::Full* pAi)
+void NodeDB::AssetInsertRaw(Asset::ID id, const Asset::Full* pAi)
 {
-	Recordset rs(*this, Query::AssetAdd, "INSERT INTO " TblAssets "(" TblAssets_ID "," TblAssets_Owner "," TblAssets_Data "," TblAssets_Value ") VALUES(?,?,?,?)");
+	Recordset rs(*this, Query::AssetAdd, "INSERT INTO " TblAssets "(" TblAssets_ID "," TblAssets_Owner "," TblAssets_Data "," TblAssets_Value "," TblAssets_LockHeight ") VALUES(?,?,?,?,?)");
 	rs.put(0, id);
 
 	if (pAi)
@@ -2443,13 +2448,14 @@ void NodeDB::AssetInsertRaw(AssetID id, const AssetInfo::Full* pAi)
 		rs.put(1, pAi->m_Owner);
 		rs.put(2, Blob(pAi->m_Metadata));
 		rs.put_As(3, pAi->m_Value);
+		rs.put(4, pAi->m_LockHeight);
 	}
 
 	rs.Step();
 	TestChanged1Row();
 }
 
-AssetID NodeDB::AssetFindMinFree(AssetID nMin)
+Asset::ID NodeDB::AssetFindMinFree(Asset::ID nMin)
 {
 	// find free index
 	Recordset rs(*this, Query::AssetFindMin, "SELECT " TblAssets_ID " FROM " TblAssets " WHERE " TblAssets_ID ">=? ORDER BY " TblAssets_ID " ASC LIMIT 1");
@@ -2458,35 +2464,37 @@ AssetID NodeDB::AssetFindMinFree(AssetID nMin)
 	if (!rs.Step())
 		return 0;
 
-	AssetID ret;
+	Asset::ID ret;
 	rs.get(0, ret);
 	return ret;
 }
 
-void NodeDB::AssetAdd(AssetInfo::Full& ai)
+void NodeDB::AssetAdd(Asset::Full& ai)
 {
 	// find free index
 	ai.m_ID = AssetFindMinFree(ai.m_ID + s_AssetEmpty0);
 	if (ai.m_ID)
 	{
-		assert(ai.m_ID >= s_AssetEmpty0);
+		assert(ai.m_ID > s_AssetEmpty0);
 		AssetDeleteRaw(ai.m_ID);
 		ai.m_ID -= s_AssetEmpty0;
 	}
 	else
 	{
-		ai.m_ID = ParamIntGetDef(ParamID::AssetsCount) + 1;
-		ParamSet(ParamID::AssetsCount, &ai.m_ID, nullptr);
+		ai.m_ID = static_cast<Asset::ID>(ParamIntGetDef(ParamID::AssetsCount) + 1);
+		ParamIntSet(ParamID::AssetsCount, ai.m_ID);
 	}
 
 	AssetInsertRaw(ai.m_ID, &ai);
+
+	ParamIntSet(ParamID::AssetsCountUsed, ParamIntGetDef(ParamID::AssetsCountUsed) + 1);
 }
 
-AssetID NodeDB::AssetDelete(AssetID id)
+Asset::ID NodeDB::AssetDelete(Asset::ID id)
 {
 	AssetDeleteRaw(id);
 
-	AssetID nCount = ParamIntGetDef(ParamID::AssetsCount);
+	Asset::ID nCount = static_cast<Asset::ID>(ParamIntGetDef(ParamID::AssetsCount));
 	if (nCount == id)
 	{
 		// last erased.
@@ -2499,17 +2507,19 @@ AssetID NodeDB::AssetDelete(AssetID id)
 			AssetDeleteRaw(id);
 		}
 
-		ParamSet(ParamID::AssetsCount, &nCount, nullptr);
+		ParamIntSet(ParamID::AssetsCount, nCount);
 	}
 	else
 		AssetInsertRaw(id + s_AssetEmpty0, nullptr);
 
+	ParamIntSet(ParamID::AssetsCountUsed, ParamIntGetDef(ParamID::AssetsCountUsed) - 1);
+
 	return nCount;
 }
 
-bool NodeDB::AssetGetSafe(AssetInfo::Full& ai)
+bool NodeDB::AssetGetSafe(Asset::Full& ai)
 {
-	Recordset rs(*this, Query::AssetGet, "SELECT " TblAssets_Value "," TblAssets_Owner "," TblAssets_Data " FROM " TblAssets " WHERE " TblAssets_ID "=?");
+	Recordset rs(*this, Query::AssetGet, "SELECT " TblAssets_Value "," TblAssets_Owner "," TblAssets_Data "," TblAssets_LockHeight " FROM " TblAssets " WHERE " TblAssets_ID "=?");
 	rs.put(0, ai.m_ID);
 	if (!rs.Step())
 		return false;
@@ -2517,14 +2527,17 @@ bool NodeDB::AssetGetSafe(AssetInfo::Full& ai)
 	rs.get_As(0, ai.m_Value);
 	rs.get_As(1, ai.m_Owner);
 	rs.get(2, ai.m_Metadata);
+	rs.get(3, ai.m_LockHeight);
+
 	return true;
 }
 
-void NodeDB::AssetSetValue(AssetID id, const AmountBig::Type& val)
+void NodeDB::AssetSetValue(Asset::ID id, const AmountBig::Type& val, Height hLockHeight)
 {
-	Recordset rs(*this, Query::AssetSetVal, "UPDATE " TblAssets " SET " TblAssets_Value "=? WHERE " TblAssets_ID "=?");
+	Recordset rs(*this, Query::AssetSetVal, "UPDATE " TblAssets " SET " TblAssets_Value "=?," TblAssets_LockHeight "=? WHERE " TblAssets_ID "=?");
 	rs.put_As(0, val);
-	rs.put(1, id);
+	rs.put(1, hLockHeight);
+	rs.put(2, id);
 	rs.Step();
 	TestChanged1Row();
 }

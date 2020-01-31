@@ -990,6 +990,14 @@ void UtxoEvent::ShieldedDelta::Get(const Key::ID::Packed& kid, const AuxBuf1& bu
     memcpy(p + sizeof(kid) + buf1.nBytes, m_pBuf, sizeof(m_pBuf));
 }
 
+void UtxoEvent::get_Cid(CoinID& cid) const
+{
+    assert(!(Flags::Shielded & m_Flags));
+
+    Cast::Down<Key::ID>(cid) = m_Kid;
+    cid.m_Value = m_Value;
+    m_AssetID.Export(cid.m_AssetID);
+}
 
 } // namespace proto
 } // namespace beam

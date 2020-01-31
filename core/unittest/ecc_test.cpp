@@ -129,6 +129,9 @@ int IS_EQUAL_HEX(const char *hex_str, const uint8_t *bytes, size_t str_size)
 }
 
 namespace ECC {
+
+typedef beam::CoinID CoinID;
+
 void Test_SetUintBig(uintBig& uintbig, int value)
 {
 	memset(uintbig.m_pData, value, uintbig.nBytes);
@@ -146,7 +149,8 @@ void Test_GenerateNonRandom(void* p, uint32_t n, uint8_t value)
 		((uint8_t*) p)[i] = value;
 }
 
-void SetRandom(uintBig& x, bool is_trezor_debug = false)
+template <uint32_t nBytes>
+void SetRandom(beam::uintBig_t<nBytes>& x, bool is_trezor_debug = false)
 {
     if (is_trezor_debug)
         Test_GenerateNonRandom(x.m_pData, x.nBytes, 3);
@@ -679,20 +683,21 @@ void TestCommitments()
 
 	for (uint8_t iCycle = 0; iCycle < 2; iCycle++)
 	{
-		uint8_t nScheme = iCycle ? Key::IDV::Scheme::V1 : Key::IDV::Scheme::V0;
+		uint8_t nScheme = iCycle ? CoinID::Scheme::V1 : CoinID::Scheme::V0;
 
-		Key::IDV kidv(100500, 15, Key::Type::Regular, 7, nScheme);
+		CoinID cid(100500, 15, Key::Type::Regular);
+		cid.set_Subkey(7, nScheme);
 
 		Scalar::Native sk;
 		Point::Native comm;
-		beam::SwitchCommitment().Create(sk, comm, kdf, kidv);
+		CoinID::Worker(cid).Create(sk, comm, kdf);
 
-		sigma = Commitment(sk, kidv.m_Value);
+		sigma = Commitment(sk, cid.m_Value);
 		sigma = -sigma;
 		sigma += comm;
 		verify_test(sigma == Zero);
 
-		beam::SwitchCommitment().Recover(sigma, kdf, kidv);
+		CoinID::Worker(cid).Recover(sigma, kdf);
 		sigma = -sigma;
 		sigma += comm;
 		verify_test(sigma == Zero);
@@ -709,32 +714,32 @@ void WriteSizeSerialized(const char* sz, const T& t)
 }
 
 struct AssetTag
+	:public CoinID::Generator
 {
-	Point::Native m_hGen;
+	using Generator::Generator;
+
 	void Commit(Point::Native& out, const Scalar::Native& sk, Amount v)
 	{
 		out = Context::get().G * sk;
-		Tag::AddValue(out, &m_hGen, v);
+		AddValue(out, v);
 	}
 };
 
 void TestRangeProof(bool bCustomTag)
 {
 	RangeProof::CreatorParams cp;
-	SetRandomOrd(cp.m_Kidv.m_Idx);
-	SetRandomOrd(cp.m_Kidv.m_Type);
-	SetRandomOrd(cp.m_Kidv.m_SubIdx);
-	cp.m_Kidv.set_Subkey(cp.m_Kidv.m_SubIdx);
+
+	beam::uintBig_t<sizeof(Key::ID::Packed)> up0, up1;
+	SetRandom(up0);
+	cp.m_Blob = up0;
+
 	SetRandom(cp.m_Seed.V);
-	cp.m_Kidv.m_Value = 345000;
+	cp.m_Value = 345000;
 
-
-	beam::AssetInfo::Base aib;
+	beam::Asset::Base aib;
 	aib.m_ID = bCustomTag ? 14 : 0;
 
-	AssetTag tag;
-	if (bCustomTag)
-		aib.get_Generator(tag.m_hGen);
+	AssetTag tag(aib.m_ID);
 
 	Scalar::Native sk;
 	SetRandom(sk);
@@ -743,7 +748,7 @@ void TestRangeProof(bool bCustomTag)
 	{
 		Oracle oracle;
 		rp.Create(sk, cp, oracle);
-		verify_test(rp.m_Value == cp.m_Kidv.m_Value);
+		verify_test(rp.m_Value == cp.m_Value);
 	}
 
 	Point::Native comm;
@@ -757,9 +762,11 @@ void TestRangeProof(bool bCustomTag)
 	{
 		RangeProof::CreatorParams cp2;
 		cp2.m_Seed = cp.m_Seed;
+		cp2.m_Blob = up1;
 
 		verify_test(rp.Recover(cp2));
-		verify_test(cp.m_Kidv == cp2.m_Kidv);
+		verify_test(cp.m_Value == cp2.m_Value);
+		verify_test(up0 == up1);
 
 		// leave only data needed for recovery
 		RangeProof::Public rp2;
@@ -768,7 +775,8 @@ void TestRangeProof(bool bCustomTag)
 		rp2.m_Value = rp.m_Value;
 
 		verify_test(rp2.Recover(cp2));
-		verify_test(cp.m_Kidv == cp2.m_Kidv);
+		verify_test(cp.m_Value == cp2.m_Value);
+		verify_test(up0 == up1);
 	}
 
 	// tamper value
@@ -819,9 +827,13 @@ void TestRangeProof(bool bCustomTag)
 	verify_test(sig.IsValid(comm, dot, mod));
 
 	RangeProof::Confidential bp;
-	cp.m_Kidv.m_Value = 23110;
+	cp.m_Value = 23110;
 
-	tag.Commit(comm, sk, cp.m_Kidv.m_Value);
+	beam::uintBig_t<sizeof(Scalar) - sizeof(Amount) - 1> uc0, uc1;
+	SetRandom(uc0);
+	cp.m_Blob = uc0;
+
+	tag.Commit(comm, sk, cp.m_Value);
 
 	{
 		Oracle oracle;
@@ -835,9 +847,10 @@ void TestRangeProof(bool bCustomTag)
 		Oracle oracle;
 		RangeProof::CreatorParams cp2;
 		cp2.m_Seed = cp.m_Seed;
+		cp2.m_Blob = uc1;
 
 		verify_test(bp.Recover(oracle, cp2));
-		verify_test(cp.m_Kidv == cp2.m_Kidv);
+		verify_test(uc0 == uc1);
 
 		// leave only data needed for recovery
 		RangeProof::Confidential bp2 = bp;
@@ -848,7 +861,7 @@ void TestRangeProof(bool bCustomTag)
 
 		oracle = Oracle();
 		verify_test(bp2.Recover(oracle, cp2));
-		verify_test(cp.m_Kidv == cp2.m_Kidv);
+		verify_test(uc0 == uc1);
 	}
 
 	// Bulletproof with extra data embedded
@@ -871,12 +884,14 @@ void TestRangeProof(bool bCustomTag)
 		Scalar::Native pExVer[2];
 
 		RangeProof::CreatorParams cp2;
+		cp2.m_Blob = uc1;
 		cp2.m_Seed = cp.m_Seed;
 		cp2.m_pSeedSk = &seedSk;
 		cp2.m_pSk = &sk2;
 		cp2.m_pExtra = pExVer;
 
 		verify_test(bp.Recover(oracle, cp2));
+		verify_test(uc0 == uc1);
 		verify_test(sk == sk2);
 		verify_test((pEx[0] == pExVer[0]) && (pEx[1] == pExVer[1]));
 	}
@@ -889,9 +904,9 @@ void TestRangeProof(bool bCustomTag)
 	}
 
 	SetRandom(sk);
-	cp.m_Kidv.m_Value = 7223110;
+	cp.m_Value = 7223110;
 	SetRandom(cp.m_Seed.V); // another seed for this bulletproof
-	tag.Commit(comm, sk, cp.m_Kidv.m_Value);
+	tag.Commit(comm, sk, cp.m_Value);
 
 	{
 		Oracle oracle;
@@ -919,7 +934,7 @@ void TestRangeProof(bool bCustomTag)
 		ZeroObject(p2);
 
 		comm = Zero;
-		Tag::AddValue(comm, &tag.m_hGen, cp.m_Kidv.m_Value);
+		Tag::AddValue(comm, &tag.m_hGen, cp.m_Value);
 
 		RangeProof::Confidential::MultiSig msig;
 
@@ -975,11 +990,14 @@ void TestRangeProof(bool bCustomTag)
 	SetRandom(seed);
 	kdf.Generate(seed);
 
+	CoinID cid(20300, 1, Key::Type::Regular);
+	cid.m_AssetID = aib.m_ID;
+
 	{
+
 		beam::Output outp;
-		outp.m_AssetID = aib.m_ID;
 		outp.m_Coinbase = true; // others may be disallowed
-		outp.Create(g_hFork, sk, kdf, Key::IDV(20300, 1, Key::Type::Regular), kdf, true);
+		outp.Create(g_hFork, sk, kdf, cid, kdf, true);
 		verify_test(outp.IsValid(g_hFork, comm));
 		WriteSizeSerialized("Out-UTXO-Public", outp);
 
@@ -988,13 +1006,16 @@ void TestRangeProof(bool bCustomTag)
 	}
 	{
 		beam::Output outp;
-		outp.m_AssetID = aib.m_ID;
-		outp.Create(g_hFork, sk, kdf, Key::IDV(20300, 1, Key::Type::Regular), kdf);
+		outp.Create(g_hFork, sk, kdf, cid, kdf);
 		verify_test(outp.IsValid(g_hFork, comm));
 		WriteSizeSerialized("Out-UTXO-Confidential", outp);
 
 		outp.m_RecoveryOnly = true;
 		WriteSizeSerialized("Out-UTXO-Confidential-RecoveryOnly", outp);
+
+		CoinID cid2;
+		verify_test(outp.Recover(g_hFork, kdf, cid2));
+		verify_test(cid == cid2);
 	}
 
 	WriteSizeSerialized("In-Utxo", beam::Input());
@@ -1012,21 +1033,17 @@ void TestMultiSigOutput()
     beam::Key::IKdf::Ptr pKdf_B;
     SetRandom(pKdf_B);
     SetRandom(pKdf_A);
-    // need only for last side - proof creator
-    RangeProof::CreatorParams creatorParamsB;
-    SetRandomOrd(creatorParamsB.m_Kidv.m_Idx);
-    creatorParamsB.m_Kidv.m_Type = Key::Type::Regular;
-    creatorParamsB.m_Kidv.m_Value = amount;
-    SetRandomOrd(creatorParamsB.m_Kidv.m_SubIdx);
-	creatorParamsB.m_Kidv.set_Subkey(creatorParamsB.m_Kidv.m_SubIdx);
 
     // multi-signed bulletproof
     // blindingFactor = sk + sk1
     Scalar::Native blindingFactorA;
     Scalar::Native blindingFactorB;
-    beam::SwitchCommitment switchCommitment;
-    switchCommitment.Create(blindingFactorA, *pKdf_A, creatorParamsB.m_Kidv);
-    switchCommitment.Create(blindingFactorB, *pKdf_B, creatorParamsB.m_Kidv);
+
+	CoinID cid(amount, 0, Key::Type::Regular);
+	CoinID::Worker wrk(cid);
+
+    wrk.Create(blindingFactorA, *pKdf_A);
+    wrk.Create(blindingFactorB, *pKdf_B);
 
     // seed from RangeProof::Confidential::Create
     uintBig seedA;
@@ -1048,7 +1065,9 @@ void TestMultiSigOutput()
 	outp.Prepare(o0, g_hFork);
 
     // from Output::get_SeedKid    
-    beam::Output::GenerateSeedKid(creatorParamsB.m_Seed.V, outp.m_Commitment, *pKdf_B);
+	RangeProof::CreatorParams cp;
+	cp.m_Value = cid.m_Value;
+	beam::Output::GenerateSeedKid(cp.m_Seed.V, outp.m_Commitment, *pKdf_B);
 
     // 1st cycle. peers produce Part2
     RangeProof::Confidential::Part2 p2;
@@ -1064,7 +1083,7 @@ void TestMultiSigOutput()
 		RangeProof::Confidential bulletproof;
 		bulletproof.m_Part2 = p2;
 
-        verify_test(bulletproof.CoSign(seedB, blindingFactorB, creatorParamsB, oracle, RangeProof::Confidential::Phase::Step2)); // add last p2, produce msig
+        verify_test(bulletproof.CoSign(seedB, blindingFactorB, cp, oracle, RangeProof::Confidential::Phase::Step2)); // add last p2, produce msig
 
 		multiSig.m_Part1 = bulletproof.m_Part1;
 		multiSig.m_Part2 = bulletproof.m_Part2;
@@ -1089,7 +1108,7 @@ void TestMultiSigOutput()
 		outp.m_pConfidential->m_Part3 = p3;
 
 		Oracle oracle(o0);
-		verify_test(outp.m_pConfidential->CoSign(seedB, blindingFactorB, creatorParamsB, oracle, RangeProof::Confidential::Phase::Finalize));
+		verify_test(outp.m_pConfidential->CoSign(seedB, blindingFactorB, cp, oracle, RangeProof::Confidential::Phase::Finalize));
     }
 
     {
@@ -1105,13 +1124,12 @@ void TestMultiSigOutput()
     std::unique_ptr<beam::Input> pInput(new beam::Input);
 
     // create test coin
-    Key::IDV kidv;
-    SetRandomOrd(kidv.m_Idx);
-    kidv.m_Type = Key::Type::Regular;
-	kidv.set_Subkey(0);
-    kidv.m_Value = amount;
+    SetRandomOrd(cid.m_Idx);
+	cid.m_Type = Key::Type::Regular;
+	cid.set_Subkey(0);
+	cid.m_Value = amount;
     Scalar::Native k;
-    beam::SwitchCommitment().Create(k, pInput->m_Commitment, *pKdf_A, kidv);
+    CoinID::Worker(cid).Create(k, pInput->m_Commitment, *pKdf_A);
     offset = k;
 
     // output
@@ -1212,42 +1230,43 @@ struct TransactionMaker
 			kG += Context::get().G * m_k;
 		}
 
-		void AddInput(beam::Transaction& t, Amount val, Key::IKdf& kdf, beam::AssetID nAssetID = 0, bool is_trezor_debug = false)
+		void AddInput(beam::Transaction& t, Amount val, Key::IKdf& kdf, beam::Asset::ID nAssetID = 0, bool is_trezor_debug = false)
 		{
 			std::unique_ptr<beam::Input> pInp(new beam::Input);
 
-			Key::IDV kidv;
-			SetRandomOrd(kidv.m_Idx, is_trezor_debug);
-			kidv.m_Type = Key::Type::Regular;
-			kidv.set_Subkey(0);
-			kidv.m_Value = val;
+			CoinID cid;
+			SetRandomOrd(cid.m_Idx, is_trezor_debug);
+			cid.m_Type = Key::Type::Regular;
+			cid.set_Subkey(0);
+			cid.m_Value = val;
+			cid.m_AssetID = nAssetID;
 
 			Scalar::Native k;
-			beam::SwitchCommitment(nAssetID).Create(k, pInp->m_Commitment, kdf, kidv);
+			CoinID::Worker(cid).Create(k, pInp->m_Commitment, kdf);
 
 			t.m_vInputs.push_back(std::move(pInp));
 			m_k += k;
 		}
 
-		void AddOutput(beam::Transaction& t, Amount val, Key::IKdf& kdf, beam::AssetID nAssetID = 0, bool is_trezor_debug = false)
+		void AddOutput(beam::Transaction& t, Amount val, Key::IKdf& kdf, beam::Asset::ID nAssetID = 0, bool is_trezor_debug = false)
 		{
 			std::unique_ptr<beam::Output> pOut(new beam::Output);
 
 			Scalar::Native k;
 
-			Key::IDV kidv;
-			SetRandomOrd(kidv.m_Idx, is_trezor_debug);
-			kidv.m_Type = Key::Type::Regular;
-			kidv.set_Subkey(0);
-			kidv.m_Value = val;
+			CoinID cid;
+			SetRandomOrd(cid.m_Idx, is_trezor_debug);
+			cid.m_Type = Key::Type::Regular;
+			cid.set_Subkey(0);
+			cid.m_Value = val;
+			cid.m_AssetID = nAssetID;
 
-			pOut->m_AssetID = nAssetID;
-			pOut->Create(g_hFork, k, kdf, kidv, kdf);
+			pOut->Create(g_hFork, k, kdf, cid, kdf);
 
 			// test recovery
-			Key::IDV kidv2;
-			verify_test(pOut->Recover(g_hFork, kdf, kidv2));
-			verify_test(kidv == kidv2);
+			CoinID cid2;
+			verify_test(pOut->Recover(g_hFork, kdf, cid2));
+			verify_test(cid == cid2);
 
 			t.m_vOutputs.push_back(std::move(pOut));
 
@@ -1322,7 +1341,7 @@ struct TransactionMaker
 		{
 			// emit some asset
 			Scalar::Native sk, skAsset;
-			beam::AssetID nAssetID = 17;
+			beam::Asset::ID nAssetID = 17;
 			Amount valAsset = 4431;
 			beam::PeerID pkAsset;
 
@@ -1449,20 +1468,20 @@ struct IHWWallet
 
 	struct TransactionInOuts
 	{
-		const Key::IDV* m_pInputs;
-		const Key::IDV* m_pOutputs;
+		const CoinID* m_pInputs;
+		const CoinID* m_pOutputs;
 		uint32_t m_Inputs;
 		uint32_t m_Outputs;
 	};
 
 	virtual void SummarizeCommitment(Point::Native& res, const TransactionInOuts&) = 0;
 
-	void CreateInput(beam::Input& res, const Key::IDV& kidv)
+	void CreateInput(beam::Input& res, const CoinID& cid)
 	{
 		TransactionInOuts tx;
 		tx.m_Outputs = 0;
 		tx.m_Inputs = 1;
-		tx.m_pInputs = &kidv;
+		tx.m_pInputs = &cid;
 
 		Point::Native pt(Zero);
 		SummarizeCommitment(pt, tx);
@@ -1470,7 +1489,7 @@ struct IHWWallet
 		res.m_Commitment = pt;
 	}
 
-	virtual void CreateOutput(beam::Output&, const Key::IDV&) = 0;
+	virtual void CreateOutput(beam::Output&, const CoinID&) = 0;
 
 	struct TransactionData
 		:public TransactionInOuts
@@ -1547,12 +1566,12 @@ struct HWWalletEmulator
 	typedef int64_t AmountSigned;
 
 	// Add the blinding factor and value of a specific TXO
-	void SummarizeOnce(Scalar::Native& res, AmountSigned& dVal, const Key::IDV& kidv)
+	void SummarizeOnce(Scalar::Native& res, AmountSigned& dVal, const CoinID& cid)
 	{
 		Scalar::Native sk;
-		beam::SwitchCommitment().Create(sk, *m_pKdf, kidv);
+		CoinID::Worker(cid).Create(sk, *m_pKdf);
 		res += sk;
-		dVal += kidv.m_Value;
+		dVal += cid.m_Value; // TODO - asset type!
 	}
 
 	// Summarize blinding factors and values of several in/out TXOs
@@ -1590,10 +1609,10 @@ struct HWWalletEmulator
 			res += Context::get().H * Amount(dVal);
 	}
 
-	virtual void CreateOutput(beam::Output& outp, const Key::IDV& kidv)  override
+	virtual void CreateOutput(beam::Output& outp, const CoinID& cid)  override
 	{
 		Scalar::Native sk;
-		outp.Create(g_hFork, sk, *m_pKdf, kidv, *m_pKdf);
+		outp.Create(g_hFork, sk, *m_pKdf, cid, *m_pKdf);
 	}
 
 	virtual bool SignTransactionRcv(TransactionData& tx) override
@@ -1755,10 +1774,10 @@ struct HWWalletEmulator
 
 	void GetWalletIDInternal(beam::PeerID& res, Scalar::Native& sk)
 	{
-		Key::IDV kidv(Zero);
-		kidv.m_Type = Key::Type::WalletID;
+		Key::ID kid(Zero);
+		kid.m_Type = Key::Type::WalletID;
 
-		m_pKdf->DeriveKey(sk, kidv);
+		m_pKdf->DeriveKey(sk, kid);
 
 		beam::proto::Sk2Pk(res, sk);
 	}
@@ -1778,22 +1797,22 @@ struct MyWallet
 	uint32_t m_iSlot; // slot selected for the transaction
 	uint64_t m_nLastCoinIndex = 0;
 
-	std::vector<Key::IDV> m_vIns;
-	std::vector<Key::IDV> m_vOuts;
+	std::vector<CoinID> m_vIns;
+	std::vector<CoinID> m_vOuts;
 
 	Amount m_Balance = 0; // in - out. Does not include fee
 
 	void AddInp(beam::TxVectors::Perishable& txp, Amount val)
 	{
 #if TREZOR_DEBUG == 1
-		Key::IDV kidv(val, 0, Key::Type::Regular);
+		CoinID cid(val, 0, Key::Type::Regular);
 #else
-		Key::IDV kidv(val, ++m_nLastCoinIndex, Key::Type::Regular);
+		CoinID cid(val, ++m_nLastCoinIndex, Key::Type::Regular);
 #endif
-		m_vIns.push_back(kidv);
+		m_vIns.push_back(cid);
 
 		beam::Input::Ptr pInp(new beam::Input);
-		m_HW.CreateInput(*pInp, kidv);
+		m_HW.CreateInput(*pInp, cid);
 
 		txp.m_vInputs.push_back(std::move(pInp));
 		m_Balance += val;
@@ -1802,14 +1821,14 @@ struct MyWallet
 	void AddOutp(beam::TxVectors::Perishable& txp, Amount val)
 	{
 #if TREZOR_DEBUG == 1
-		Key::IDV kidv(val, 0, Key::Type::Regular);
+		CoinID cid(val, 0, Key::Type::Regular);
 #else
-		Key::IDV kidv(val, ++m_nLastCoinIndex, Key::Type::Regular);
+		CoinID cid(val, ++m_nLastCoinIndex, Key::Type::Regular);
 #endif
-		m_vOuts.push_back(kidv);
+		m_vOuts.push_back(cid);
 
 		beam::Output::Ptr pOutp(new beam::Output);
-		m_HW.CreateOutput(*pOutp, kidv);
+		m_HW.CreateOutput(*pOutp, cid);
 
 		txp.m_vOutputs.push_back(std::move(pOutp));
 		m_Balance -= val;
@@ -2056,7 +2075,7 @@ void TestKdf()
 	ks1.SetPassword(sPass);
 	ks1.m_sMeta = "hello, World!";
 
-	ks1.Export(skdf);
+	ks1.ExportS(skdf);
 	HKdf skdf2;
 	ks1.m_sMeta.clear();
 	ks1.SetPassword(sPass);
@@ -2064,7 +2083,7 @@ void TestKdf()
 
 	verify_test(skdf2.IsSame(skdf));
 
-	ks1.Export(pkdf);
+	ks1.ExportP(pkdf);
 	HKdfPub pkdf2;
 	verify_test(ks1.Import(pkdf2));
 	verify_test(pkdf2.IsSame(pkdf));
@@ -2338,14 +2357,27 @@ void TestTreasury()
 	}
 }
 
-void TestLelantus()
+void TestLelantus(bool bWithAsset)
 {
 	beam::Lelantus::Cfg cfg; // default
+
+	if (bWithAsset)
+	{
+		// set other parameters. Test small set (make it run faster)
+		cfg.n = 3;
+		cfg.M = 4; // 3^4 = 81
+	}
+
 	const uint32_t N = cfg.get_N();
-	printf("Lelantus [n, M, N] = [%u, %u, %u]\n", cfg.n, cfg.M, N);
+	if (!bWithAsset)
+		printf("Lelantus [n, M, N] = [%u, %u, %u]\n", cfg.n, cfg.M, N);
 
 	beam::Lelantus::CmListVec lst;
 	lst.m_vec.resize(N);
+
+	Point::Native hGen;
+	if (bWithAsset)
+		beam::Asset::Base(35).get_Generator(hGen);
 
 	Point::Native rnd;
 	SetRandom(rnd);
@@ -2357,10 +2389,19 @@ void TestLelantus()
 	proof.m_Cfg = cfg;
 	beam::Lelantus::Prover p(lst, proof);
 
+	beam::Sigma::Prover::UserData ud1, ud2;
+	for (size_t i = 0; i < _countof(ud1.m_pS); i++)
+	{
+		do
+			SetRandom(ud1.m_pS[i].m_Value);
+		while (!ud1.m_pS[i].IsValid());
+	}
+	p.m_pUserData = &ud1;
+
 	p.m_Witness.V.m_V = 100500;
 	p.m_Witness.V.m_R = 4U;
 	p.m_Witness.V.m_R_Output = 756U;
-	p.m_Witness.V.m_L = 333;
+	p.m_Witness.V.m_L = 333 % N;
 	SetRandom(p.m_Witness.V.m_SpendSk);
 
 	Point::Native pt = Context::get().G * p.m_Witness.V.m_SpendSk;
@@ -2368,18 +2409,42 @@ void TestLelantus()
 	Scalar::Native ser;
 	beam::Lelantus::SpendKey::ToSerial(ser, pt_);
 
-
-	pt = Commitment(p.m_Witness.V.m_R, p.m_Witness.V.m_V);
+	pt = Context::get().G * p.m_Witness.V.m_R;
+	Tag::AddValue(pt, &hGen, p.m_Witness.V.m_V);
 	pt += Context::get().J * ser;
 	pt.Export(lst.m_vec[p.m_Witness.V.m_L]);
+
+	if (bWithAsset)
+	{
+		// add blinding to the asset
+		Scalar::Native skGen = 77345U;
+		hGen = hGen + Context::get().G * skGen;
+
+		skGen *= p.m_Witness.V.m_V;
+
+		p.m_Witness.V.m_R_Adj = p.m_Witness.V.m_R_Output;
+		p.m_Witness.V.m_R_Adj += -skGen;
+	}
 
 	Oracle oracle;
 
 	uint32_t t = beam::GetTime_ms();
 
-	p.Generate(Zero, oracle);
+	p.Generate(Zero, oracle, &hGen);
 
-	printf("\tProof time = %u ms\n", beam::GetTime_ms() - t);
+	if (!bWithAsset)
+		printf("\tProof time = %u ms\n", beam::GetTime_ms() - t);
+
+	{
+		Oracle o2;
+		Hash::Value hv0;
+		proof.m_Cfg.Expose(o2);
+		proof.Expose0(o2, hv0);
+		ud2.Recover(o2, proof, Zero);
+
+		for (size_t i = 0; i < _countof(ud1.m_pS); i++)
+			verify_test(ud1.m_pS[i] == ud2.m_pS[i]);
+	}
 
 	typedef InnerProduct::BatchContextEx<4> MyBatch;
 
@@ -2395,7 +2460,8 @@ void TestLelantus()
 		der_.reset(ser_.buffer().first, ser_.buffer().second);
 		der_ & proof;
 
-		printf("\tProof size = %u\n", (uint32_t)ser_.buffer().second);
+		if (!bWithAsset)
+			printf("\tProof size = %u\n", (uint32_t)ser_.buffer().second);
 	}
 	MyBatch bc;
 
@@ -2415,7 +2481,7 @@ void TestLelantus()
 		for (uint32_t i = 0; i < nCycles; i++)
 		{
 			Oracle o2;
-			if (!proof.IsValid(bc, o2, &vKs.front()))
+			if (!proof.IsValid(bc, o2, &vKs.front(), &hGen))
 				bSuccess = false;
 		}
 
@@ -2424,7 +2490,8 @@ void TestLelantus()
 		if (!bc.Flush())
 			bSuccess = false;
 
-		printf("\tVerify time %u overlapping proofs = %u ms\n", nCycles, beam::GetTime_ms() - t);
+		if (!bWithAsset)
+			printf("\tVerify time %u overlapping proofs = %u ms\n", nCycles, beam::GetTime_ms() - t);
 	}
 
 	verify_test(bSuccess);
@@ -2462,6 +2529,7 @@ void TestLelantusKeys()
 	verify_test(txo.m_Serial.IsValid(pt));
 	verify_test(sprs2.Recover(txo.m_Serial, viewer));
 	verify_test(sprs2.m_IsCreatedByViewer);
+	verify_test(sprs2.m_SharedSecret == sprs.m_SharedSecret);
 
 	// make sure we get the appropriate private spend key
 	Scalar::Native kSpend;
@@ -2473,30 +2541,38 @@ void TestLelantusKeys()
 	oprs.m_Sender = 1U;
 	oprs.m_Value = 3002U;
 	oprs.m_Message = Scalar::s_Order;
+	oprs.m_AssetID = 18;
 	{
 		Oracle oracle;
-		oprs.Generate(txo, oracle, gen, 115U);
+		oprs.Generate(txo, sprs.m_SharedSecret, oracle, gen);
 	}
 	{
 		Oracle oracle;
-		verify_test(oprs2.Recover(txo, oracle, viewer));
+		verify_test(txo.IsValid(oracle, pt, pt));
+	}
+	{
+		Oracle oracle;
+		verify_test(oprs2.Recover(txo, sprs.m_SharedSecret, oracle, viewer));
+		verify_test(oprs.m_AssetID == oprs2.m_AssetID);
 		verify_test(oprs.m_Sender == oprs2.m_Sender);
 		verify_test(oprs.m_Message == oprs2.m_Message);
 	}
 
-	oprs.m_Sender.Negate(); // won't fin ECC::Scalar, special handling should be done
+	oprs.m_Sender.Negate(); // won't fit ECC::Scalar, special handling should be done
 	oprs.m_Message.Negate();
 	oprs.m_Message.Inc();
 	oprs.m_Message.Negate(); // should be 1 less than the order
+	oprs.m_AssetID = 0;
 
 	{
 		Oracle oracle;
-		oprs.Generate(txo, oracle, gen, 115U);
+		oprs.Generate(txo, sprs.m_SharedSecret, oracle, gen);
 	}
 	{
 		Oracle oracle;
-		verify_test(oprs2.Recover(txo, oracle, viewer));
+		verify_test(oprs2.Recover(txo, sprs.m_SharedSecret, oracle, viewer));
 		verify_test(oprs.m_Sender == oprs2.m_Sender);
+		verify_test(oprs.m_Message == oprs2.m_Message);
 		verify_test(oprs.m_Message == oprs2.m_Message);
 	}
 
@@ -2506,13 +2582,33 @@ void TestLelantusKeys()
 	}
 }
 
+void TestAssetProof()
+{
+	Scalar::Native sk;
+	SetRandom(sk);
+
+	Amount val = 400;
+
+	Point::Native genBlinded;
+
+	beam::Asset::Proof proof;
+	proof.Create(genBlinded, sk, val, 100500);
+	verify_test(proof.IsValid(genBlinded));
+
+	proof.Create(genBlinded, sk, val, 1);
+	verify_test(proof.IsValid(genBlinded));
+
+	proof.Create(genBlinded, sk, val, 0);
+	verify_test(proof.IsValid(genBlinded));
+}
+
 void TestAssetEmission()
 {
 	const beam::Height hScheme = g_hFork;
 
-	beam::Key::IDV kidvInpBeam (170, 12, beam::Key::Type::Regular);
-	beam::Key::IDV kidvInpAsset(53,  15, beam::Key::Type::Asset);
-	beam::Key::IDV kidvOutBeam (70,  25, beam::Key::Type::Regular);
+	CoinID cidInpBeam (170, 12, beam::Key::Type::Regular);
+	CoinID cidInpAsset(53,  15, beam::Key::Type::Regular);
+	CoinID cidOutBeam (70,  25, beam::Key::Type::Regular);
 	const beam::Amount fee = 100;
 
 	beam::Key::IKdf::Ptr pKdf;
@@ -2523,23 +2619,24 @@ void TestAssetEmission()
 
 	beam::PeerID assetOwner;
 	beam::proto::Sk2Pk(assetOwner, skAssetSk);
-	beam::AssetID nAssetID = 24;
+	beam::Asset::ID nAssetID = 24;
 
+	cidInpAsset.m_AssetID = nAssetID;
 
 	beam::Transaction tx;
 
 	beam::Input::Ptr pInp(new beam::Input);
-	beam::SwitchCommitment().Create(sk, pInp->m_Commitment, *pKdf, kidvInpBeam);
+	CoinID::Worker(cidInpBeam).Create(sk, pInp->m_Commitment, *pKdf);
 	tx.m_vInputs.push_back(std::move(pInp));
 	kOffset += sk;
 
 	beam::Input::Ptr pInpAsset(new beam::Input);
-	beam::SwitchCommitment(nAssetID).Create(sk, pInpAsset->m_Commitment, *pKdf, kidvInpAsset);
+	CoinID::Worker(cidInpAsset).Create(sk, pInpAsset->m_Commitment, *pKdf);
 	tx.m_vInputs.push_back(std::move(pInpAsset));
 	kOffset += sk;
 
 	beam::Output::Ptr pOutp(new beam::Output);
-	pOutp->Create(hScheme, sk, *pKdf, kidvOutBeam, *pKdf);
+	pOutp->Create(hScheme, sk, *pKdf, cidOutBeam, *pKdf);
 	tx.m_vOutputs.push_back(std::move(pOutp));
 	kOffset += -sk;
 
@@ -2556,7 +2653,7 @@ void TestAssetEmission()
 	pKdf->DeriveKey(sk, beam::Key::ID(73123, beam::Key::Type::Kernel));
 	pKrnAsset->m_AssetID = nAssetID;
 	pKrnAsset->m_Owner = assetOwner;
-	pKrnAsset->m_Value = -static_cast<beam::AmountSigned>(kidvInpAsset.m_Value);
+	pKrnAsset->m_Value = -static_cast<beam::AmountSigned>(cidInpAsset.m_Value);
 	pKrnAsset->m_Height.m_Min = hScheme;
 	pKrnAsset->Sign(sk, skAssetSk);
 	tx.m_vKernels.push_back(std::move(pKrnAsset));
@@ -2669,8 +2766,10 @@ void TestAll()
 	TestRandom();
 	TestFourCC();
 	TestTreasury();
+	TestAssetProof();
 	TestAssetEmission();
-	TestLelantus();
+	TestLelantus(false);
+	TestLelantus(true);
 	TestLelantusKeys();
 }
 
@@ -3045,9 +3144,8 @@ void RunBenchmark()
 
 	RangeProof::Confidential bp;
 	RangeProof::CreatorParams cp;
-	ZeroObject(cp.m_Kidv);
 	SetRandom(cp.m_Seed.V);
-	cp.m_Kidv.m_Value = 23110;
+	cp.m_Value = 23110;
 
 	{
 		BenchmarkMeter bm("BulletProof.Sign");
@@ -3063,7 +3161,7 @@ void RunBenchmark()
 		} while (bm.ShouldContinue());
 	}
 
-	Point::Native comm = Commitment(k1, cp.m_Kidv.m_Value);
+	Point::Native comm = Commitment(k1, cp.m_Value);
 
 	{
 		BenchmarkMeter bm("BulletProof.Verify");

@@ -55,8 +55,8 @@ namespace beam::wallet
     class InvalidTransactionParametersException : public std::runtime_error
     {
     public:
-        InvalidTransactionParametersException()
-            : std::runtime_error("")
+        explicit InvalidTransactionParametersException(const char* message)
+            : std::runtime_error(message)
         {
         }
     };
@@ -113,7 +113,7 @@ namespace beam::wallet
         using TxCompletedAction = std::function<void(const TxID& tx_id)>;
         using UpdateCompletedAction = std::function<void()>;
 
-        Wallet(IWalletDB::Ptr walletDB, IPrivateKeyKeeper::Ptr keyKeeper, TxCompletedAction&& action = TxCompletedAction(), UpdateCompletedAction&& updateCompleted = UpdateCompletedAction());
+        Wallet(IWalletDB::Ptr walletDB, TxCompletedAction&& action = TxCompletedAction(), UpdateCompletedAction&& updateCompleted = UpdateCompletedAction());
         virtual ~Wallet();
         void CleanupNetwork();
 
@@ -150,6 +150,7 @@ namespace beam::wallet
 
         void confirm_outputs(const std::vector<Coin>&) override;
         void confirm_kernel(const TxID&, const Merkle::Hash& kernelID, SubTxID subTxID) override;
+        void confirm_asset(const TxID& txID, const Key::Index ownerIdx, const PeerID& ownerID, SubTxID subTxID) override;
         void get_kernel(const TxID&, const Merkle::Hash& kernelID, SubTxID subTxID) override;
         bool get_tip(Block::SystemState::Full& state) const override;
         void send_tx_params(const WalletID& peerID, const SetTxParameter&) override;
@@ -186,7 +187,7 @@ namespace beam::wallet
         void saveKnownState();
         void RequestUtxoEvents();
         void AbortUtxoEvents();
-        void ProcessUtxoEvent(const proto::UtxoEvent&);
+        void ProcessUtxoEvent(const CoinID&, Height h, Height hMaturity, bool bAdd);
         void SetUtxoEventsHeight(Height);
         Height GetUtxoEventsHeightNext();
 
@@ -238,6 +239,11 @@ namespace beam::wallet
                 SubTxID m_SubTxID = kDefaultSubTxID;
             };
             struct Kernel2
+            {
+                TxID m_TxID;
+                SubTxID m_SubTxID = kDefaultSubTxID;
+            };
+            struct Asset
             {
                 TxID m_TxID;
                 SubTxID m_SubTxID = kDefaultSubTxID;
@@ -315,8 +321,6 @@ namespace beam::wallet
         uint32_t m_LastSyncTotal;
 
         uint32_t m_OwnedNodesOnline;
-
-        IPrivateKeyKeeper::Ptr m_KeyKeeper;
 
         std::vector<IWalletObserver*> m_subscribers;
         std::set<IWalletMessageEndpoint::Ptr> m_MessageEndpoints;

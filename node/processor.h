@@ -39,7 +39,9 @@ class NodeProcessor
 	size_t m_nSizeUtxoComission;
 
 	struct MultiblockContext;
+	struct MultiSigmaContext;
 	struct MultiShieldedContext;
+	struct MultiAssetContext;
 
 	void RollbackTo(Height);
 	Height PruneOld();
@@ -74,8 +76,8 @@ class NodeProcessor
 	void Recognize(const TxKernelShieldedInput&, Height);
 	void Recognize(const TxKernelShieldedOutput&, Height, const ShieldedTxo::Viewer*);
 
-	void InternalAssetAdd(AssetInfo::Full&);
-	void InternalAssetDel(AssetID);
+	void InternalAssetAdd(Asset::Full&);
+	void InternalAssetDel(Asset::ID);
 
 	bool HandleKernel(const TxKernel&, BlockInterpretCtx&);
 
@@ -399,14 +401,20 @@ public:
 	bool EnumTxos(ITxoWalker&);
 	bool EnumTxos(ITxoWalker&, const HeightRange&);
 
-	struct ITxoRecover
+	struct ITxoWalker_Unspent
 		:public ITxoWalker
+	{
+		virtual bool OnTxo(const NodeDB::WalkerTxo&, Height hCreate) override;
+	};
+
+	struct ITxoRecover
+		:public ITxoWalker_Unspent
 	{
 		Key::IPKdf& m_Key;
 		ITxoRecover(Key::IPKdf& key) :m_Key(key) {}
 
 		virtual bool OnTxo(const NodeDB::WalkerTxo&, Height hCreate, Output&) override;
-		virtual bool OnTxo(const NodeDB::WalkerTxo&, Height hCreate, Output&, const Key::IDV&) = 0;
+		virtual bool OnTxo(const NodeDB::WalkerTxo&, Height hCreate, Output&, const CoinID&) = 0;
 	};
 
 	struct ITxoWalker_UnspentNaked
@@ -422,9 +430,10 @@ public:
 		static_assert(sizeof(Key) == sizeof(ECC::uintBig) + 1, "");
 
 		struct Value {
-			ECC::Key::IDV::Packed m_Kidv;
+			ECC::Key::ID::Packed m_Kid;
+			uintBigFor<Amount>::Type m_Value;
 			uintBigFor<Height>::Type m_Maturity;
-			uintBigFor<AssetID>::Type m_AssetID;
+			uintBigFor<Asset::ID>::Type m_AssetID;
 			proto::UtxoEvent::AuxBuf1 m_Buf1;
 			uint8_t m_Flags;
 		};
@@ -457,9 +466,9 @@ public:
 #pragma pack (pop)
 
 	virtual void OnUtxoEvent(const UtxoEvent::Value&, Height) {}
-	virtual void OnDummy(const Key::ID&, Height) {}
+	virtual void OnDummy(const CoinID&, Height) {}
 
-	static bool IsDummy(const Key::IDV&);
+	static bool IsDummy(const CoinID&);
 
 	struct Mmr
 	{

@@ -28,7 +28,6 @@ namespace beam
 	typedef ECC::Hash::Value PeerID;
 	typedef uint64_t BbsChannel;
 	typedef ECC::Hash::Value BbsMsgID;
-	typedef uint64_t AssetID; // 1-based asset index. 0 is reserved for default asset (Beam)
 	typedef uint64_t TxoID;
 
 	using ECC::Key;
@@ -36,7 +35,6 @@ namespace beam
 	namespace MasterKey
 	{
 		Key::IKdf::Ptr get_Child(Key::IKdf&, Key::Index);
-		Key::IKdf::Ptr get_Child(const Key::IKdf::Ptr&, const Key::IDV&);
 	}
 
 	Timestamp getTimestamp();
@@ -98,6 +96,91 @@ namespace beam
 		COMPARISON_VIA_CMP
 	};
 
+	struct Asset
+	{
+		typedef uint32_t ID; // 1-based asset index. 0 is reserved for default asset (Beam)
+		static const ID s_MaxCount = uint32_t(1) << 30; // 1 billion. Of course practically it'll be very much smaller
+
+		struct Base
+		{
+			ID m_ID;
+
+			Base(ID id = 0) :m_ID(id) {}
+
+			void get_Generator(ECC::Point::Native&) const;
+			void get_Generator(ECC::Point::Storage&) const;
+			void get_Generator(ECC::Point::Native&, ECC::Point::Storage&) const;
+		};
+
+		struct Info
+		{
+			AmountBig::Type m_Value;
+			PeerID m_Owner;
+			Height m_LockHeight; // last emitted/burned change height. if emitted atm - when was latest 1st emission. If burned atm - what was last burn.
+			ByteBuffer m_Metadata;
+			static const uint32_t s_MetadataMaxSize = 1024 * 16; // 16K
+
+			void Reset();
+		};
+
+		struct Full
+			:public Base
+			,public Info
+		{
+			void get_Hash(ECC::Hash::Value&) const;
+		};
+
+		struct Proof
+			:public Sigma::Proof
+		{
+			typedef std::unique_ptr<Proof> Ptr;
+
+			Asset::ID m_Begin; // 1st element
+			ECC::Point m_hGen;
+
+			bool IsValid(ECC::Point::Native& hGen) const; // for testing only, in real-world cases batch verification should be used!
+			bool IsValid(ECC::Point::Native& hGen, ECC::InnerProduct::BatchContext& bc, ECC::Scalar::Native* pKs) const;
+			void Create(ECC::Point::Native& genBlinded, ECC::Scalar::Native& skInOut, Amount val, Asset::ID, const ECC::Point::Native& gen);
+			void Create(ECC::Point::Native& genBlinded, ECC::Scalar::Native& skInOut, Amount val, Asset::ID);
+			void Create(ECC::Point::Native& genBlinded, const ECC::Scalar::Native& skGen, Asset::ID, const ECC::Point::Native& gen);
+
+			static void ModifySk(ECC::Scalar::Native& skInOut, const ECC::Scalar::Native& skGen, Amount val);
+
+			struct CmList
+				:public Sigma::CmList
+			{
+				Asset::ID m_Begin;
+				virtual bool get_At(ECC::Point::Storage&, uint32_t iIdx) override;
+			};
+
+			void Clone(Ptr&) const;
+
+			struct BatchContext
+			{
+				static thread_local BatchContext* s_pInstance;
+
+				struct Scope
+				{
+					BatchContext* m_pPrev;
+
+					Scope(BatchContext& bc) {
+						m_pPrev = s_pInstance;
+						s_pInstance = &bc;
+					}
+					~Scope() {
+						s_pInstance = m_pPrev;
+					}
+				};
+
+				virtual bool IsValid(ECC::Point::Native& hGen, const Proof&) = 0;
+			};
+
+		private:
+			uint32_t SetBegin(Asset::ID, const ECC::Scalar::Native& skGen);
+			static const ECC::Point::Compact& get_H();
+			static void get_skGen(ECC::Scalar::Native& skGen, const ECC::Scalar::Native& sk, Amount val, Asset::ID aid);
+		};
+	};
 	struct Rules
 	{
 		Rules();
@@ -137,6 +220,8 @@ namespace beam
 		struct {
 			bool Enabled = false;
 			Amount DepositForList = Coin * 1000;
+			Height LockPeriod = 1440; // how long it's locked (can't be destroyed) after it was completely burned
+			Sigma::Cfg m_ProofCfg;
 		} CA;
 
 		uint32_t MaxRollback = 1440; // 1 day roughly
@@ -187,22 +272,98 @@ namespace beam
 		bool IsForkHeightsConsistent() const;
 	};
 
-	class SwitchCommitment
+	struct CoinID
+		:public Key::ID
 	{
-		static void get_sk1(ECC::Scalar::Native& res, const ECC::Point::Native& comm0, const ECC::Point::Native& sk0_J);
-		void CreateInternal(ECC::Scalar::Native&, ECC::Point::Native&, bool bComm, Key::IKdf& kdf, const Key::IDV& kidv) const;
-		void AddValue(ECC::Point::Native& comm, Amount) const;
-		static void get_Hash(ECC::Hash::Value&, const Key::IDV&);
-	public:
+		struct Scheme
+		{
+			static const uint8_t V0 = 0;
+			static const uint8_t V1 = 1;
+			static const uint8_t BB21 = 2; // worakround for BB.2.1
 
-	    ECC::Point::Native m_hGen;
-		SwitchCommitment(AssetID = 0);
+			static const uint32_t s_SubKeyBits = 24;
+			static const Key::Index s_SubKeyMask = (static_cast<Key::Index>(1) << s_SubKeyBits) - 1;
+		};
 
-		void Create(ECC::Scalar::Native& sk, Key::IKdf&, const Key::IDV&) const;
-		void Create(ECC::Scalar::Native& sk, ECC::Point::Native& comm, Key::IKdf&, const Key::IDV&) const;
-		void Create(ECC::Scalar::Native& sk, ECC::Point& comm, Key::IKdf&, const Key::IDV&) const;
-		void Recover(ECC::Point::Native& comm, Key::IPKdf&, const Key::IDV&) const;
+		Amount m_Value;
+
+		Asset::ID m_AssetID = 0;
+
+		CoinID() {}
+		CoinID(Zero_)
+			:ID(Zero)
+			,m_Value(0)
+		{
+			set_Subkey(0);
+		}
+
+		CoinID(Amount v, uint64_t nIdx, Key::Type type, Key::Index nSubIdx = 0)
+			:ID(nIdx, type)
+			,m_Value(v)
+		{
+			set_Subkey(nSubIdx, Scheme::V1);
+		}
+
+		Key::Index get_Scheme() const
+		{
+			return m_SubIdx >> Scheme::s_SubKeyBits;
+		}
+
+		Key::Index get_Subkey() const
+		{
+			return m_SubIdx & Scheme::s_SubKeyMask;
+		}
+
+		void set_Subkey(Key::Index nSubIdx, Key::Index nScheme = Scheme::V1)
+		{
+			m_SubIdx = (nSubIdx & Scheme::s_SubKeyMask) | (nScheme << Scheme::s_SubKeyBits);
+		}
+
+		bool IsBb21Possible() const
+		{
+			return m_SubIdx && (Scheme::V0 == get_Scheme());
+		}
+
+		void set_WorkaroundBb21()
+		{
+			set_Subkey(get_Subkey(), Scheme::BB21);
+		}
+
+		void get_Hash(ECC::Hash::Value&) const;
+
+		bool get_ChildKdfIndex(Key::Index&) const; // returns false if chils is not needed
+		Key::IKdf::Ptr get_ChildKdf(const Key::IKdf::Ptr& pMasterKdf) const;
+
+		struct Generator
+		{
+			ECC::Point::Native m_hGen;
+			Generator(Asset::ID);
+			void AddValue(ECC::Point::Native& comm, Amount) const;
+		};
+
+		class Worker
+			:public Generator
+		{
+			static void get_sk1(ECC::Scalar::Native& res, const ECC::Point::Native& comm0, const ECC::Point::Native& sk0_J);
+			void CreateInternal(ECC::Scalar::Native&, ECC::Point::Native&, bool bComm, Key::IKdf& kdf) const;
+
+		public:
+			const CoinID& m_Cid;
+
+			Worker(const CoinID&);
+
+			void AddValue(ECC::Point::Native& comm) const;
+
+			void Create(ECC::Scalar::Native& sk, Key::IKdf&) const;
+			void Create(ECC::Scalar::Native& sk, ECC::Point::Native& comm, Key::IKdf&) const;
+			void Create(ECC::Scalar::Native& sk, ECC::Point& comm, Key::IKdf&) const;
+
+			void Recover(ECC::Point::Native& comm, Key::IPKdf&) const;
+			void Recover(ECC::Point::Native& pkG_in_res_out, const ECC::Point::Native& pkJ) const;
+		};
 	};
+
+	std::ostream& operator << (std::ostream&, const CoinID&);
 
 	struct TxStats
 	{
@@ -219,38 +380,6 @@ namespace beam
 
 		void Reset();
 		void operator += (const TxStats&);
-	};
-
-	struct AssetInfo
-	{
-		struct Base
-		{
-			AssetID m_ID;
-
-			Base(AssetID id = 0) :m_ID(id) {}
-
-			void get_Generator(ECC::Point::Native&) const;
-			void get_Generator(ECC::Point::Storage&) const;
-			void get_Generator(ECC::Point::Native&, ECC::Point::Storage&) const;
-		};
-
-		struct Data
-		{
-			AmountBig::Type m_Value;
-			PeerID m_Owner;
-
-			ByteBuffer m_Metadata;
-			static const uint32_t s_MetadataMaxSize = 1024 * 16; // 16K
-
-			void Reset();
-		};
-
-		struct Full
-			:public Base
-			,public Data
-		{
-			void get_Hash(ECC::Hash::Value&) const;
-		};
 	};
 
 	struct TxElement
@@ -327,13 +456,11 @@ namespace beam
 		bool		m_Coinbase;
 		bool		m_RecoveryOnly;
 		Height		m_Incubation; // # of blocks before it's mature
-		AssetID		m_AssetID;
 
 		Output()
 			:m_Coinbase(false)
 			,m_RecoveryOnly(false)
 			,m_Incubation(0)
-			,m_AssetID(0)
 		{
 		}
 
@@ -342,11 +469,12 @@ namespace beam
 		// one of the following *must* be specified
 		std::unique_ptr<ECC::RangeProof::Confidential>	m_pConfidential;
 		std::unique_ptr<ECC::RangeProof::Public>		m_pPublic;
+		Asset::Proof::Ptr								m_pAsset;
 
-		void Create(Height hScheme, ECC::Scalar::Native&, Key::IKdf& coinKdf, const Key::IDV&, Key::IPKdf& tagKdf, bool bPublic = false);
+		void Create(Height hScheme, ECC::Scalar::Native&, Key::IKdf& coinKdf, const CoinID&, Key::IPKdf& tagKdf, bool bPublic = false);
 
-		bool Recover(Height hScheme, Key::IPKdf& tagKdf, Key::IDV&) const;
-		bool VerifyRecovered(Key::IPKdf& coinKdf, const Key::IDV&) const;
+		bool Recover(Height hScheme, Key::IPKdf& tagKdf, CoinID&) const;
+		bool VerifyRecovered(Key::IPKdf& coinKdf, const CoinID&) const;
 
 		bool IsValid(Height hScheme, ECC::Point::Native& comm) const;
 		Height get_MinMaturity(Height h) const; // regardless to the explicitly-overridden
@@ -359,6 +487,9 @@ namespace beam
 
 		static void GenerateSeedKid(ECC::uintBig&, const ECC::Point& comm, Key::IPKdf&);
 		void Prepare(ECC::Oracle&, Height hScheme) const;
+
+	private:
+		struct PackedKA; // Key::ID + Asset::ID
 	};
 
 	inline bool operator < (const Output::Ptr& a, const Output::Ptr& b) { return *a < *b; }
@@ -399,10 +530,13 @@ namespace beam
 
 		ECC::Point m_Commitment;
 		ECC::RangeProof::Confidential m_RangeProof;
+		Asset::Proof::Ptr m_pAsset;
 		Serial m_Serial;
 
 		void Prepare(ECC::Oracle&) const;
 		bool IsValid(ECC::Oracle&, ECC::Point::Native& comm, ECC::Point::Native& ser) const;
+
+		void operator = (const ShieldedTxo&); // clone
 
 		struct PublicGen;
 		struct Viewer;
@@ -568,7 +702,7 @@ namespace beam
 	{
 		typedef std::unique_ptr<TxKernelAssetEmit> Ptr;
 
-		AssetID m_AssetID;
+		Asset::ID m_AssetID;
 		AmountSigned m_Value;
 		TxKernelAssetEmit() :m_Value(0) {}
 
@@ -600,7 +734,7 @@ namespace beam
 	{
 		typedef std::unique_ptr<TxKernelAssetDestroy> Ptr;
 
-		AssetID m_AssetID;
+		Asset::ID m_AssetID;
 
 		virtual ~TxKernelAssetDestroy() {}
 		virtual Subtype::Enum get_Subtype() const override;
@@ -634,6 +768,7 @@ namespace beam
 
 		TxoID m_WindowEnd; // ID of the 1st element outside the window
 		Lelantus::Proof m_SpendProof;
+		Asset::Proof::Ptr m_pAsset;
 
 		virtual ~TxKernelShieldedInput() {}
 		virtual Subtype::Enum get_Subtype() const override;
@@ -876,7 +1011,7 @@ namespace beam
 				bool IsValidProofUtxo(const ECC::Point&, const Input::Proof&) const;
 				bool IsValidProofShieldedOutp(const ShieldedTxo::DescriptionOutp&, const Merkle::Proof&) const;
 				bool IsValidProofShieldedInp(const ShieldedTxo::DescriptionInp&, const Merkle::Proof&) const;
-				bool IsValidProofAsset(const AssetInfo::Full&, const Merkle::Proof&) const;
+				bool IsValidProofAsset(const Asset::Full&, const Merkle::Proof&) const;
 
 				int cmp(const Full&) const;
 				COMPARISON_VIA_CMP

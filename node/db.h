@@ -57,7 +57,8 @@ public:
 			UtxoStamp,
 			ShieldedOutputs,
 			ShieldedInputs,
-			AssetsCount, // The last element is guaranteed to be used.
+			AssetsCount, // Including unused. The last element is guaranteed to be used.
+			AssetsCountUsed, // num of 'live' assets
 		};
 	};
 
@@ -275,7 +276,8 @@ public:
 	void ParamSet(uint32_t ID, const uint64_t*, const Blob*);
 	bool ParamGet(uint32_t ID, uint64_t*, Blob*, ByteBuffer* = NULL);
 
-	uint64_t ParamIntGetDef(int ID, uint64_t def = 0);
+	uint64_t ParamIntGetDef(uint32_t ID, uint64_t def = 0);
+	void ParamIntSet(uint32_t ID, uint64_t val);
 
 	uint64_t InsertState(const Block::SystemState::Full&, const PeerID&); // Fails if state already exists
 
@@ -570,11 +572,11 @@ public:
 	bool UniqueFind(const Blob& key, Recordset&);
 	void UniqueDeleteStrict(const Blob& key);
 
-	void AssetAdd(AssetInfo::Full&); // sets ID=0 to auto assign, otherwise - specified ID must be used
-	bool AssetFindByOwner(AssetInfo::Full&); // set ID to min threshold as well
-	AssetID AssetDelete(AssetID); // returns remaining assets count (including the unused)
-	bool AssetGetSafe(AssetInfo::Full&); // must set ID before invocation
-	void AssetSetValue(AssetID, const AmountBig::Type&);
+	void AssetAdd(Asset::Full&); // sets ID=0 to auto assign, otherwise - specified ID must be used
+	Asset::ID AssetFindByOwner(const PeerID&);
+	Asset::ID AssetDelete(Asset::ID); // returns remaining assets count (including the unused)
+	bool AssetGetSafe(Asset::Full&); // must set ID before invocation
+	void AssetSetValue(Asset::ID, const AmountBig::Type&, Height hLockHeight);
 
 private:
 
@@ -630,10 +632,10 @@ private:
 
 	void ShieldeIO(uint64_t pos, ECC::Point::Storage*, uint64_t nCount, bool bWrite);
 
-	static const AssetID s_AssetEmpty0;
-	void AssetInsertRaw(AssetID, const AssetInfo::Full*);
-	void AssetDeleteRaw(AssetID);
-	AssetID AssetFindMinFree(AssetID nMin);
+	static const Asset::ID s_AssetEmpty0;
+	void AssetInsertRaw(Asset::ID, const Asset::Full*);
+	void AssetDeleteRaw(Asset::ID);
+	Asset::ID AssetFindMinFree(Asset::ID nMin);
 };
 
 

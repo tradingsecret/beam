@@ -721,7 +721,7 @@ void NodeProcessor::RequestDataInternal(const Block::SystemState::ID& id, uint64
 	}
 }
 
-struct NodeProcessor::MultiShieldedContext
+struct NodeProcessor::MultiSigmaContext
 {
 	static const uint32_t s_Chunk = 0x400;
 
@@ -749,38 +749,37 @@ struct NodeProcessor::MultiShieldedContext
 	void Add(TxoID id0, uint32_t nCount, const ECC::Scalar::Native*);
 	void ClearLocked();
 
-	~MultiShieldedContext()
+	~MultiSigmaContext()
 	{
 		ClearLocked();
 	}
 
 	void Calculate(ECC::Point::Native&, NodeProcessor&);
-	bool IsValid(const TxVectors::Eternal&, ECC::InnerProduct::BatchContext&, uint32_t iVerifier, uint32_t nTotal);
 
 private:
 
 	struct MyTask;
 
 	void DeleteRaw(Node&);
-	Lelantus::CmListVec m_Lst;
 	std::vector<ECC::Point::Native> m_vRes;
 
-	bool IsValid(const TxKernelShieldedInput&, std::vector<ECC::Scalar::Native>& vBuf, ECC::InnerProduct::BatchContext&);
+	virtual Sigma::CmList& get_List() = 0;
+	virtual void PrepareList(NodeProcessor&, const Node&) = 0;
 };
 
-void NodeProcessor::MultiShieldedContext::ClearLocked()
+void NodeProcessor::MultiSigmaContext::ClearLocked()
 {
 	while (!m_Set.empty())
 		DeleteRaw(m_Set.begin()->get_ParentObj());
 }
 
-void NodeProcessor::MultiShieldedContext::DeleteRaw(Node& n)
+void NodeProcessor::MultiSigmaContext::DeleteRaw(Node& n)
 {
 	m_Set.erase(Node::IDSet::s_iterator_to(n.m_ID));
 	delete &n;
 }
 
-void NodeProcessor::MultiShieldedContext::Add(TxoID id0, uint32_t nCount, const ECC::Scalar::Native* pS)
+void NodeProcessor::MultiSigmaContext::Add(TxoID id0, uint32_t nCount, const ECC::Scalar::Native* pS)
 {
 	uint32_t nOffset = static_cast<uint32_t>(id0 % s_Chunk);
 
@@ -826,10 +825,10 @@ void NodeProcessor::MultiShieldedContext::Add(TxoID id0, uint32_t nCount, const 
 	}
 }
 
-struct NodeProcessor::MultiShieldedContext::MyTask
+struct NodeProcessor::MultiSigmaContext::MyTask
 	:public NodeProcessor::Task
 {
-	MultiShieldedContext* m_pThis;
+	MultiSigmaContext* m_pThis;
 	const ECC::Scalar::Native* m_pS;
 	uint32_t m_iIdx;
 	uint32_t m_i0;
@@ -842,11 +841,11 @@ struct NodeProcessor::MultiShieldedContext::MyTask
 		ECC::Point::Native& val = m_pThis->m_vRes[m_iIdx];
 		val = Zero;
 
-		m_pThis->m_Lst.Calculate(val, m_i0, m_nCount, m_pS);
+		m_pThis->get_List().Calculate(val, m_i0, m_nCount, m_pS);
 	}
 };
 
-void NodeProcessor::MultiShieldedContext::Calculate(ECC::Point::Native& res, NodeProcessor& np)
+void NodeProcessor::MultiSigmaContext::Calculate(ECC::Point::Native& res, NodeProcessor& np)
 {
 	Task::Processor& tp = np.get_TaskProcessor();
 	uint32_t nThreads = tp.get_Threads();
@@ -858,9 +857,7 @@ void NodeProcessor::MultiShieldedContext::Calculate(ECC::Point::Native& res, Nod
 		assert(n.m_Max <= s_Chunk);
 
 		m_vRes.resize(nThreads);
-		m_Lst.m_vec.resize(s_Chunk); // will allocate if empty
-
-		np.get_DB().ShieldedRead(n.m_ID.m_Value + n.m_Min, &m_Lst.m_vec.front() + n.m_Min, n.m_Max - n.m_Min);
+		PrepareList(np, n);
 
 		for (uint32_t i = 0; i < nThreads; i++)
 		{
@@ -886,6 +883,28 @@ void NodeProcessor::MultiShieldedContext::Calculate(ECC::Point::Native& res, Nod
 	}
 }
 
+struct NodeProcessor::MultiShieldedContext
+	:public NodeProcessor::MultiSigmaContext
+{
+	bool IsValid(const TxVectors::Eternal&, ECC::InnerProduct::BatchContext&, uint32_t iVerifier, uint32_t nTotal);
+private:
+
+	Sigma::CmListVec m_Lst;
+
+	bool IsValid(const TxKernelShieldedInput&, std::vector<ECC::Scalar::Native>& vBuf, ECC::InnerProduct::BatchContext&);
+
+	virtual Sigma::CmList& get_List() override
+	{
+		return m_Lst;
+	}
+
+	virtual void PrepareList(NodeProcessor& np, const Node& n) override
+	{
+		m_Lst.m_vec.resize(s_Chunk); // will allocate if empty
+		np.get_DB().ShieldedRead(n.m_ID.m_Value + n.m_Min, &m_Lst.m_vec.front() + n.m_Min, n.m_Max - n.m_Min);
+	}
+};
+
 bool NodeProcessor::MultiShieldedContext::IsValid(const TxKernelShieldedInput& krn, std::vector<ECC::Scalar::Native>& vKs, ECC::InnerProduct::BatchContext& bc)
 {
 	const Lelantus::Proof& x = krn.m_SpendProof;
@@ -896,9 +915,13 @@ bool NodeProcessor::MultiShieldedContext::IsValid(const TxKernelShieldedInput& k
 	vKs.resize(N);
 	memset0(&vKs.front(), sizeof(ECC::Scalar::Native) * N);
 
+	ECC::Point::Native hGen;
+	if (krn.m_pAsset)
+		BEAM_VERIFY(hGen.Import(krn.m_pAsset->m_hGen)); // must already be tested in krn.IsValid();
+
 	ECC::Oracle oracle;
 	oracle << krn.m_Msg;
-	if (!x.IsValid(bc, oracle, &vKs.front()))
+	if (!x.IsValid(bc, oracle, &vKs.front(), &hGen))
 		return false;
 
 	TxoID id1 = krn.m_WindowEnd;
@@ -944,6 +967,57 @@ bool NodeProcessor::MultiShieldedContext::IsValid(const TxVectors::Eternal& txve
 	wlk.m_Total = nTotal;
 
 	return wlk.Process(txve.m_vKernels);
+}
+
+struct NodeProcessor::MultiAssetContext
+	:public NodeProcessor::MultiSigmaContext
+{
+	struct BatchCtx
+		:public Asset::Proof::BatchContext
+	{
+		MultiAssetContext& m_Ctx;
+		BatchCtx(MultiAssetContext& ctx) :m_Ctx(ctx) {}
+
+		std::vector<ECC::Scalar::Native> m_vKs;
+
+		virtual bool IsValid(ECC::Point::Native& hGen, const Asset::Proof&) override;
+	};
+
+private:
+
+	Asset::Proof::CmList m_Lst;
+
+	virtual Sigma::CmList& get_List() override
+	{
+		return m_Lst;
+	}
+
+	virtual void PrepareList(NodeProcessor& np, const Node& n) override
+	{
+		static_assert(sizeof(n.m_ID.m_Value) >= sizeof(m_Lst.m_Begin));
+
+		// TODO: maybe cache it in DB
+		m_Lst.m_Begin = static_cast<Asset::ID>(n.m_ID.m_Value);
+	}
+};
+
+bool NodeProcessor::MultiAssetContext::BatchCtx::IsValid(ECC::Point::Native& hGen, const Asset::Proof& p)
+{
+	assert(ECC::InnerProduct::BatchContext::s_pInstance);
+	ECC::InnerProduct::BatchContext& bc = *ECC::InnerProduct::BatchContext::s_pInstance;
+
+	const Sigma::Cfg& cfg = Rules::get().CA.m_ProofCfg;
+	uint32_t N = cfg.get_N();
+	assert(N);
+
+	m_vKs.resize(N); // will allocate if empty
+	memset0(&m_vKs.front(), sizeof(ECC::Scalar::Native) * N);
+
+	if (!p.IsValid(hGen, bc, &m_vKs.front()))
+		return false;
+
+	m_Ctx.Add(p.m_Begin, N, &m_vKs.front());
+	return true;
 }
 
 struct NodeProcessor::MultiblockContext
@@ -994,6 +1068,7 @@ struct NodeProcessor::MultiblockContext
 	ECC::Point::Native m_Sigma;
 
 	MultiShieldedContext m_Msc;
+	MultiAssetContext m_Mac;
 
 	size_t m_SizePending = 0;
 	bool m_bFail = false;
@@ -1096,6 +1171,7 @@ struct NodeProcessor::MultiblockContext
 			m_bBatchDirty = false;
 
 			m_Msc.Calculate(ptBatchSigma, m_This);
+			m_Mac.Calculate(ptBatchSigma, m_This);
 
 			if (!(ptBatchSigma == Zero))
 			{
@@ -1267,6 +1343,9 @@ void NodeProcessor::MultiblockContext::MyTask::SharedBlock::Exec(uint32_t iVerif
 	beam::TxBase txbDummy;
 	if (bSparse)
 		txbDummy.m_Offset = Zero;
+
+	MultiAssetContext::BatchCtx bcAssets(m_Mbc.m_Mac);
+	Asset::Proof::BatchContext::Scope scopeAssets(bcAssets);
 
 	bool bValid = ctx.ValidateAndSummarize(bSparse ? txbDummy : m_Body, m_Body.get_Reader());
 
@@ -1618,7 +1697,7 @@ Height NodeProcessor::RaiseFossil(Height hTrg)
 
 	}
 
-	m_DB.ParamSet(NodeDB::ParamID::FossilHeight, &m_Extra.m_Fossil, NULL);
+	m_DB.ParamIntSet(NodeDB::ParamID::FossilHeight, m_Extra.m_Fossil);
 	return hRet;
 }
 
@@ -1657,7 +1736,7 @@ Height NodeProcessor::RaiseTxoLo(Height hTrg)
 	}
 
 	m_Extra.m_TxoLo = hTrg;
-	m_DB.ParamSet(NodeDB::ParamID::HeightTxoLo, &m_Extra.m_TxoLo, NULL);
+	m_DB.ParamIntSet(NodeDB::ParamID::HeightTxoLo, m_Extra.m_TxoLo);
 
 	return hRet;
 }
@@ -1694,7 +1773,7 @@ Height NodeProcessor::RaiseTxoHi(Height hTrg)
 		}
 	}
 
-	m_DB.ParamSet(NodeDB::ParamID::HeightTxoHi, &m_Extra.m_TxoHi, NULL);
+	m_DB.ParamIntSet(NodeDB::ParamID::HeightTxoHi, m_Extra.m_TxoHi);
 
 	return hRet;
 }
@@ -1707,7 +1786,7 @@ void NodeProcessor::TxoToNaked(uint8_t* pBuf, Blob& v)
 	const uint8_t* pSrc = reinterpret_cast<const uint8_t*>(v.p);
 	v.p = pBuf;
 
-	if (!(0x30 & pSrc[0]))
+	if (!(0x10 & pSrc[0]))
 	{
 		// simple case - just remove some flags and truncate.
 		memcpy(pBuf, pSrc, s_TxoNakedMin);
@@ -1717,7 +1796,7 @@ void NodeProcessor::TxoToNaked(uint8_t* pBuf, Blob& v)
 		return;
 	}
 
-	// complex case - the UTXO has either AssetID or Incubation period. Utxo must be re-read
+	// complex case - the UTXO has Incubation period. Utxo must be re-read
 	Deserializer der;
 	der.reset(pSrc, v.n);
 
@@ -1726,7 +1805,7 @@ void NodeProcessor::TxoToNaked(uint8_t* pBuf, Blob& v)
 
 	outp.m_pConfidential.reset();
 	outp.m_pPublic.reset();
-	outp.m_AssetID = 0;
+	outp.m_pAsset.reset();
 
 	StaticBufferSerializer<s_TxoNakedMax> ser;
 	ser & outp;
@@ -1854,6 +1933,7 @@ struct NodeProcessor::BlockInterpretCtx
 
 	uint32_t m_ShieldedIns = 0;
 	uint32_t m_ShieldedOuts = 0;
+	Asset::ID m_AssetsUsed = Asset::s_MaxCount + 1;
 
 	// rollback data
 	ByteBuffer* m_pRollback = nullptr;
@@ -1882,11 +1962,18 @@ struct NodeProcessor::BlockInterpretCtx
 		:public boost::intrusive::set_base_hook<>
 	{
 		uint32_t m_Size;
+#ifdef _MSC_VER
+#	pragma warning (disable: 4200) // 0-sized array
+#endif // _MSC_VER
+		uint8_t m_pBuf[0]; // var size
+#ifdef _MSC_VER
+#	pragma warning (default: 4200)
+#endif // _MSC_VER
 
 		Blob ToBlob() const
 		{
 			Blob x;
-			x.p = this + 1;
+			x.p = m_pBuf;
 			x.n = m_Size;
 			return x;
 		}
@@ -1925,6 +2012,8 @@ struct NodeProcessor::BlockInterpretCtx
 		,m_Fwd(bFwd)
 	{
 	}
+
+	void EnsureAssetsUsed(NodeDB&);
 };
 
 bool NodeProcessor::HandleTreasury(const Blob& blob)
@@ -2329,7 +2418,7 @@ void NodeProcessor::Recognize(const TxKernelShieldedOutput& v, Height h, const S
 	oracle << v.m_Msg;
 
 	ShieldedTxo::Data::OutputParams op;
-	if (!op.Recover(txo, oracle, *pKeyShielded))
+	if (!op.Recover(txo, sp.m_SharedSecret, oracle, *pKeyShielded))
 		return;
 
 	proto::UtxoEvent::Shielded ues;
@@ -2341,8 +2430,8 @@ void NodeProcessor::Recognize(const TxKernelShieldedOutput& v, Height h, const S
 	ues.m_kOutG = op.m_k;
 
 	UtxoEvent::ValueS evt;
-	evt.m_Kidv.m_Value = op.m_Value;
-	evt.m_ShieldedDelta.Set(evt.m_Kidv, evt.m_Buf1, ues);
+	evt.m_Value = op.m_Value;
+	evt.m_ShieldedDelta.Set(evt.m_Kid, evt.m_Buf1, ues);
 	evt.m_AssetID = 0U;
 	evt.m_Maturity = h;
 
@@ -2359,22 +2448,23 @@ void NodeProcessor::Recognize(const TxKernelShieldedOutput& v, Height h, const S
 
 void NodeProcessor::Recognize(const Output& x, Height h, Key::IPKdf& keyViewer)
 {
-	Key::IDV kidv;
-	if (!x.Recover(h, keyViewer, kidv))
+	CoinID cid;
+	if (!x.Recover(h, keyViewer, cid))
 		return;
 
 	// filter-out dummies
-	if (IsDummy(kidv))
+	if (IsDummy(cid))
 	{
-		OnDummy(kidv, h);
+		OnDummy(cid, h);
 		return;
 	}
 
 	// bingo!
 	UtxoEvent::Value evt;
-	evt.m_Kidv = kidv;
+	evt.m_Kid = cid;
+	evt.m_Value = cid.m_Value;
 	evt.m_Flags = proto::UtxoEvent::Flags::Add;
-	evt.m_AssetID = x.m_AssetID;
+	evt.m_AssetID = cid.m_AssetID;
 	evt.m_Buf1 = Zero;
 
 	evt.m_Maturity = x.get_MinMaturity(h);
@@ -2401,19 +2491,20 @@ void NodeProcessor::RescanOwnedTxos()
 		{
 		}
 
-		virtual bool OnTxo(const NodeDB::WalkerTxo& wlk, Height hCreate, Output& outp, const Key::IDV& kidv) override
+		virtual bool OnTxo(const NodeDB::WalkerTxo& wlk, Height hCreate, Output& outp, const CoinID& cid) override
 		{
-			if (IsDummy(kidv))
+			if (IsDummy(cid))
 			{
-				m_This.OnDummy(kidv, hCreate);
+				m_This.OnDummy(cid, hCreate);
 				return true;
 			}
 
 			UtxoEvent::Value evt;
-			evt.m_Kidv = kidv;
+			evt.m_Kid = cid;
+			evt.m_Value = cid.m_Value;
 			evt.m_Maturity = outp.get_MinMaturity(hCreate);
 			evt.m_Flags = proto::UtxoEvent::Flags::Add;
-			evt.m_AssetID = outp.m_AssetID;
+			evt.m_AssetID = cid.m_AssetID;
 			evt.m_Buf1 = Zero;
 
 			const UtxoEvent::Key& key = outp.m_Commitment;
@@ -2485,9 +2576,12 @@ void NodeProcessor::RescanOwnedTxos()
 	}
 }
 
-bool NodeProcessor::IsDummy(const Key::IDV&  kidv)
+bool NodeProcessor::IsDummy(const CoinID&  cid)
 {
-	return !kidv.m_Value && (Key::Type::Decoy == kidv.m_Type);
+	return
+		!cid.m_Value &&
+		!cid.m_AssetID &&
+		(Key::Type::Decoy == cid.m_Type);
 }
 
 bool NodeProcessor::HandleKernel(const TxKernelStd& krn, BlockInterpretCtx& bic)
@@ -2516,7 +2610,7 @@ bool NodeProcessor::HandleKernel(const TxKernelStd& krn, BlockInterpretCtx& bic)
 	return true;
 }
 
-void NodeProcessor::InternalAssetAdd(AssetInfo::Full& ai)
+void NodeProcessor::InternalAssetAdd(Asset::Full& ai)
 {
 	ai.m_Value = Zero;
 	m_DB.AssetAdd(ai);
@@ -2533,9 +2627,9 @@ void NodeProcessor::InternalAssetAdd(AssetInfo::Full& ai)
 	m_Mmr.m_Assets.Replace(ai.m_ID - 1, hv);
 }
 
-void NodeProcessor::InternalAssetDel(AssetID nAssetID)
+void NodeProcessor::InternalAssetDel(Asset::ID nAssetID)
 {
-	AssetID nCount = m_DB.AssetDelete(nAssetID);
+	Asset::ID nCount = m_DB.AssetDelete(nAssetID);
 
 	assert(nCount <= m_Mmr.m_Assets.m_Count);
 	if (nCount < m_Mmr.m_Assets.m_Count)
@@ -2549,6 +2643,27 @@ void NodeProcessor::InternalAssetDel(AssetID nAssetID)
 
 bool NodeProcessor::HandleKernel(const TxKernelAssetCreate& krn, BlockInterpretCtx& bic)
 {
+	if (!bic.m_AlreadyValidated)
+	{
+		bic.EnsureAssetsUsed(m_DB);
+
+		if (bic.m_Fwd)
+		{
+			if (m_DB.AssetFindByOwner(krn.m_Owner))
+				return false;
+
+			if (bic.m_AssetsUsed >= Asset::s_MaxCount)
+				return false;
+
+			bic.m_AssetsUsed++;
+		}
+		else
+		{
+			assert(bic.m_AssetsUsed);
+			bic.m_AssetsUsed--;
+		}
+	}
+
 	if (!bic.m_UpdateMmrs)
 		return true;
 
@@ -2556,9 +2671,10 @@ bool NodeProcessor::HandleKernel(const TxKernelAssetCreate& krn, BlockInterpretC
 
 	if (bic.m_Fwd)
 	{
-		AssetInfo::Full ai;
+		Asset::Full ai;
 		ai.m_ID = 0; // auto
 		ai.m_Owner = krn.m_Owner;
+		ai.m_LockHeight = bic.m_Height;
 
 		TemporarySwap<ByteBuffer> ts(Cast::NotConst(krn).m_MetaData, ai.m_Metadata);
 
@@ -2571,7 +2687,7 @@ bool NodeProcessor::HandleKernel(const TxKernelAssetCreate& krn, BlockInterpretC
 	{
 		BlockInterpretCtx::Der der(bic);
 
-		AssetID nVal;
+		Asset::ID nVal;
 		der & nVal;
 
 		InternalAssetDel(nVal);
@@ -2582,18 +2698,30 @@ bool NodeProcessor::HandleKernel(const TxKernelAssetCreate& krn, BlockInterpretC
 
 bool NodeProcessor::HandleKernel(const TxKernelAssetDestroy& krn, BlockInterpretCtx& bic)
 {
+	if (!bic.m_AlreadyValidated)
+		bic.EnsureAssetsUsed(m_DB);
+
 	if (bic.m_Fwd)
 	{
-		AssetInfo::Full ai;
+		Asset::Full ai;
 		ai.m_ID = krn.m_AssetID;
 		if (!m_DB.AssetGetSafe(ai))
 			return false;
 
-		if (ai.m_Owner != krn.m_Owner)
-			return false;
+		if (!bic.m_AlreadyValidated)
+		{
+			if (ai.m_Owner != krn.m_Owner)
+				return false;
 
-		if (ai.m_Value != Zero)
-			return false;
+			if (ai.m_Value != Zero)
+				return false;
+
+			if (ai.m_LockHeight + Rules::get().CA.LockPeriod > bic.m_Height)
+				return false;
+
+			assert(bic.m_AssetsUsed);
+			bic.m_AssetsUsed--;
+		}
 
 		if (bic.m_UpdateMmrs)
 		{
@@ -2601,24 +2729,34 @@ bool NodeProcessor::HandleKernel(const TxKernelAssetDestroy& krn, BlockInterpret
 			InternalAssetDel(krn.m_AssetID);
 
 			BlockInterpretCtx::Ser ser(bic);
-			ser & ai.m_Metadata;
+			ser
+				& ai.m_Metadata
+				& ai.m_LockHeight;
 		}
 	}
 	else
 	{
 		if (bic.m_UpdateMmrs)
 		{
-			AssetInfo::Full ai;
+			Asset::Full ai;
 			ai.m_ID = krn.m_AssetID;
 			ai.m_Owner = krn.m_Owner;
 
 			BlockInterpretCtx::Der der(bic);
-			der & ai.m_Metadata;
+			der
+				& ai.m_Metadata
+				& ai.m_LockHeight;
 
 			InternalAssetAdd(ai);
 
 			if (ai.m_ID != krn.m_AssetID)
 				OnCorrupted();
+		}
+
+		if (!bic.m_AlreadyValidated)
+		{
+			bic.m_AssetsUsed++;
+			assert(bic.m_AssetsUsed <= Asset::s_MaxCount);
 		}
 	}
 
@@ -2632,7 +2770,7 @@ bool NodeProcessor::HandleKernel(const TxKernelAssetEmit& krn, BlockInterpretCtx
 	if (!bic.m_Fwd && !bic.m_UpdateMmrs)
 		return true;
 
-	AssetInfo::Full ai;
+	Asset::Full ai;
 	ai.m_ID = krn.m_AssetID;
 	if (!m_DB.AssetGetSafe(ai))
 		return false;
@@ -2653,6 +2791,8 @@ bool NodeProcessor::HandleKernel(const TxKernelAssetEmit& krn, BlockInterpretCtx
 	if (!bic.m_Fwd)
 		bAdd = !bAdd;
 
+	bool bWasZero = (ai.m_Value == Zero);
+
 	if (bAdd)
 	{
 		ai.m_Value += valBig;
@@ -2670,7 +2810,24 @@ bool NodeProcessor::HandleKernel(const TxKernelAssetEmit& krn, BlockInterpretCtx
 
 	if (bic.m_UpdateMmrs)
 	{
-		m_DB.AssetSetValue(ai.m_ID, ai.m_Value);
+		bool bZero = (ai.m_Value == Zero);
+		if (bZero != bWasZero)
+		{
+			if (bic.m_Fwd)
+			{
+				BlockInterpretCtx::Ser ser(bic);
+				ser & ai.m_LockHeight;
+
+				ai.m_LockHeight = bic.m_Height;
+			}
+			else
+			{
+				BlockInterpretCtx::Der der(bic);
+				der & ai.m_LockHeight;
+			}
+		}
+
+		m_DB.AssetSetValue(ai.m_ID, ai.m_Value, ai.m_LockHeight);
 
 		Merkle::Hash hv;
 		ai.get_Hash(hv);
@@ -2763,7 +2920,7 @@ bool NodeProcessor::HandleKernel(const TxKernelShieldedOutput& krn, BlockInterpr
 	}
 
 	if (bic.m_StoreShieldedOutput)
-		m_DB.ParamSet(NodeDB::ParamID::ShieldedOutputs, &m_Extra.m_ShieldedOutputs, nullptr);
+		m_DB.ParamIntSet(NodeDB::ParamID::ShieldedOutputs, m_Extra.m_ShieldedOutputs);
 
 	return true;
 }
@@ -2834,7 +2991,7 @@ bool NodeProcessor::HandleKernel(const TxKernelShieldedInput& krn, BlockInterpre
 		assert(bic.m_UpdateMmrs); // otherwise the following formula will be wrong
 
 		TxoID nShieldedInputs = m_Mmr.m_Shielded.m_Count - m_Extra.m_ShieldedOutputs;
-		m_DB.ParamSet(NodeDB::ParamID::ShieldedInputs, &nShieldedInputs, nullptr);
+		m_DB.ParamIntSet(NodeDB::ParamID::ShieldedInputs, nShieldedInputs);
 	}
 
 
@@ -3172,6 +3329,12 @@ bool NodeProcessor::IsShieldedInPool(const TxKernelShieldedInput& krn)
 	return true;
 }
 
+void NodeProcessor::BlockInterpretCtx::EnsureAssetsUsed(NodeDB& db)
+{
+	if (m_AssetsUsed == Asset::s_MaxCount + 1)
+		m_AssetsUsed = static_cast<Asset::ID>(db.ParamIntGetDef(NodeDB::ParamID::AssetsCountUsed));
+}
+
 NodeProcessor::BlockInterpretCtx::BlobSet::~BlobSet()
 {
 	Clear();
@@ -3206,7 +3369,7 @@ void NodeProcessor::BlockInterpretCtx::BlobSet::Add(const Blob& key)
 {
 	BlobItem* pItem = new (key.n) BlobItem;
 	pItem->m_Size = key.n;
-	memcpy(pItem + 1, key.p, key.n);
+	memcpy(pItem->m_pBuf, key.p, key.n);
 
 	insert(*pItem);
 }
@@ -3375,6 +3538,8 @@ void NodeProcessor::RollbackTo(Height h)
 		BlockInterpretCtx bic(m_Cursor.m_Sid.m_Height, false);
 		bic.m_StoreShieldedOutput = true;
 		bic.m_pRollback = &bbR;
+		bic.m_ShieldedIns = static_cast<uint32_t>(-1); // suppress assertion
+		bic.m_ShieldedOuts = static_cast<uint32_t>(-1);
 		HandleElementVecBwd(txve.m_vKernels, bic, txve.m_vKernels.size());
 		assert(bbR.empty());
 	}
@@ -4211,11 +4376,13 @@ bool NodeProcessor::ITxoWalker::OnTxo(const NodeDB::WalkerTxo&, Height hCreate, 
 
 bool NodeProcessor::ITxoRecover::OnTxo(const NodeDB::WalkerTxo& wlk, Height hCreate, Output& outp)
 {
-	Key::IDV kidv;
-	if (!outp.Recover(hCreate, m_Key, kidv))
+	assert(MaxHeight == wlk.m_SpendHeight);
+
+	CoinID cid;
+	if (!outp.Recover(hCreate, m_Key, cid))
 		return true;
 
-	return OnTxo(wlk, hCreate, outp, kidv);
+	return OnTxo(wlk, hCreate, outp, cid);
 }
 
 bool NodeProcessor::ITxoWalker_UnspentNaked::OnTxo(const NodeDB::WalkerTxo& wlk, Height hCreate)
@@ -4224,16 +4391,17 @@ bool NodeProcessor::ITxoWalker_UnspentNaked::OnTxo(const NodeDB::WalkerTxo& wlk,
 		return true;
 
 	uint8_t pNaked[s_TxoNakedMax];
-	Blob val = wlk.m_Value;
-	TxoToNaked(pNaked, val); // save allocation and deserialization of sig
+	TxoToNaked(pNaked, Cast::NotConst(wlk).m_Value); // save allocation and deserialization of sig
 
-	Deserializer der;
-	der.reset(val.p, val.n);
+	return ITxoWalker::OnTxo(wlk, hCreate);
+}
 
-	Output outp;
-	der & outp;
+bool NodeProcessor::ITxoWalker_Unspent::OnTxo(const NodeDB::WalkerTxo& wlk, Height hCreate)
+{
+	if (wlk.m_SpendHeight != MaxHeight)
+		return true;
 
-	return Cast::Down<ITxoWalker>(*this).OnTxo(wlk, hCreate, outp);
+	return ITxoWalker::OnTxo(wlk, hCreate);
 }
 
 void NodeProcessor::InitializeUtxos()
@@ -4284,7 +4452,7 @@ bool NodeProcessor::GetBlockInternal(const NodeDB::StateID& sid, ByteBuffer* pEt
 
 	// For every output:
 	//	if SpendHeight > hHi1 (or null) then fully transfer
-	//	if SpendHeight > hLo1 then transfer naked (remove Confidential, Public, AssetID)
+	//	if SpendHeight > hLo1 then transfer naked (remove Confidential, Public, Asset::ID)
 	//	Otherwise - don't transfer
 
 	// For every input (commitment only):
@@ -4406,7 +4574,7 @@ bool NodeProcessor::GetBlockInternal(const NodeDB::StateID& sid, ByteBuffer* pEt
 			break;
 
 		//	if SpendHeight > hHi1 (or null) then fully transfer
-		//	if SpendHeight > hLo1 then transfer naked (remove Confidential, Public, AssetID)
+		//	if SpendHeight > hLo1 then transfer naked (remove Confidential, Public, Asset::ID)
 		//	Otherwise - don't transfer
 
 		if (wlk.m_SpendHeight <= hLo1)
