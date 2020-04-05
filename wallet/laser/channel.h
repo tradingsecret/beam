@@ -23,8 +23,6 @@
 
 namespace beam::wallet::laser
 {
-const Height kMaxRolbackHeight = 8;
-
 class Channel : public Lightning::Channel, public ILaserChannelEntity
 {
 public:
@@ -39,22 +37,21 @@ public:
     Channel(IChannelHolder& holder,
             const WalletAddress& myAddr,
             const WalletID& trg,
-            const Amount& fee,
             const Amount& aMy,
             const Amount& aTrg,
-            Height locktime);
+            const Lightning::Channel::Params& params = {});
     Channel(IChannelHolder& holder,
             const ChannelIDPtr& chID,
             const WalletAddress& myAddr,
             const WalletID& trg,
-            const Amount& fee,
             const Amount& aMy,
             const Amount& aTrg,
-            Height locktime);
+            const Lightning::Channel::Params& params = {});
     Channel(IChannelHolder& holder,
             const ChannelIDPtr& chID,
             const WalletAddress& myAddr,
-            const TLaserChannelEntity& entity);
+            const TLaserChannelEntity& entity,
+            const Lightning::Channel::Params& params = {});
     Channel(const Channel&) = delete;
     void operator=(const Channel&) = delete;
     Channel(Channel&& channel) = delete;
@@ -90,17 +87,16 @@ public:
     const ByteBuffer& get_Data() const override;
     const WalletAddress& get_myAddr() const override;
 
-    bool Open(HeightRange openWindow);
+    bool Open(Height hOpenTxDh);
     bool TransformLastState();
-    Lightning::Channel::State::Enum get_LastState() const;
+    int get_LastState() const;
     void UpdateRestorePoint();
-    void LogNewState();
+    void LogState();
     void Subscribe();
     void Unsubscribe();
-
-protected:
-    bool TransferInternal(
-        Amount nMyNew, uint32_t iRole, bool bCloseGraceful) override;
+    bool IsSafeToClose() const;
+    bool IsUpdateStuck() const;
+    bool IsGracefulCloseStuck() const;
 
 private:
     void RestoreInternalState(const ByteBuffer& data);
@@ -108,8 +104,7 @@ private:
     IChannelHolder& m_rHolder;
 
     bool m_SendMyWid = true;
-    beam::Lightning::Channel::State::Enum m_lastState = State::None;
-    beam::Lightning::Channel::State::Enum m_lastLoggedState = State::None;
+    int m_lastState = State::None;
 
     ChannelIDPtr m_ID;
     WalletAddress m_myAddr;
@@ -120,9 +115,9 @@ private:
     Amount m_aCurTrg;
     Height m_lockHeight = MaxHeight;
     Timestamp m_bbsTimestamp;
+    Height m_lastUpdateStart = 0;
     
     std::unique_ptr<Receiver> m_upReceiver;
     ByteBuffer m_data;
-    bool m_gracefulClose = false;
 };
 }  // namespace beam::wallet::laser

@@ -17,22 +17,25 @@
 #include "utility/logger.h"
 #include "core/ecc_native.h"
 #include "base58.h"
+#include "utility/string_helpers.h"
 
 #include <iomanip>
 #include <boost/algorithm/string.hpp>
+#include <boost/multiprecision/cpp_dec_float.hpp>
 
 using namespace std;
 using namespace ECC;
 using namespace beam;
+using boost::multiprecision::cpp_dec_float_50;
 
-namespace std
+namespace
 {
-    string to_string(const beam::wallet::WalletID& id)
+    // skips leading zeroes
+    template<typename T>
+    string EncodeToHex(const T& v)
     {
-        static_assert(sizeof(id) == sizeof(id.m_Channel) + sizeof(id.m_Pk), "");
-
-        char szBuf[sizeof(id) * 2 + 1];
-        beam::to_hex(szBuf, &id, sizeof(id));
+        char szBuf[sizeof(v) * 2 + 1];
+        beam::to_hex(szBuf, &v, sizeof(v));
 
         const char* szPtr = szBuf;
         while (*szPtr == '0')
@@ -43,49 +46,21 @@ namespace std
 
         return szPtr;
     }
+}
+
+namespace std
+{
+    string to_string(const beam::wallet::WalletID& id)
+    {
+        static_assert(sizeof(id) == sizeof(id.m_Channel) + sizeof(id.m_Pk), "");
+        return EncodeToHex(id);
+    }
 
     string to_string(const Merkle::Hash& hash)
     {
         char sz[Merkle::Hash::nTxtLen + 1];
         hash.Print(sz);
         return string(sz);
-    }
-
-    string to_string(beam::wallet::AtomicSwapCoin value)
-    {
-        switch (value)
-        {
-        case beam::wallet::AtomicSwapCoin::Bitcoin:
-            return "BTC";
-        case beam::wallet::AtomicSwapCoin::Litecoin:
-            return "LTC";
-        case beam::wallet::AtomicSwapCoin::Qtum:
-            return "QTUM";
-        default:
-            return "";
-        }
-    }
-
-    string to_string(beam::wallet::SwapOfferStatus status)
-    {
-        switch (status)
-        {
-        case beam::wallet::SwapOfferStatus::Pending:
-            return "Pending";
-        case beam::wallet::SwapOfferStatus::InProgress:
-            return "InProgress";
-        case beam::wallet::SwapOfferStatus::Completed:
-            return "Completed";
-        case beam::wallet::SwapOfferStatus::Canceled:
-            return "Canceled";
-        case beam::wallet::SwapOfferStatus::Expired:
-            return "Expired";
-        case beam::wallet::SwapOfferStatus::Failed:
-            return "Failed";
-
-        default:
-            return "";
-        }
     }
 
     string to_string(const beam::wallet::PrintableAmount& amount)
@@ -125,6 +100,21 @@ namespace std
         s.swap_buf(buffer);
         return beam::wallet::EncodeToBase58(buffer);
     }
+
+    string to_string(const beam::Version& v)
+    {
+        return v.to_string();
+    }
+
+    string to_string(const beam::wallet::TxID& id)
+    {
+        return to_hex(id.data(), id.size());
+    }
+
+    string to_string(const beam::PeerID& id)
+    {
+        return EncodeToHex(id);
+    }
 }  // namespace std
 
 namespace beam
@@ -132,7 +122,7 @@ namespace beam
     std::ostream& operator<<(std::ostream& os, const wallet::TxID& uuid)
     {
         stringstream ss;
-        ss << "[" << to_hex(uuid.data(), uuid.size()) << "]";
+        ss << "[" << std::to_string(uuid) << "]";
         os << ss.str();
         return os;
     }
@@ -178,19 +168,7 @@ namespace beam::wallet
     bool WalletID::IsValid() const
     {
         Point::Native p;
-        return proto::ImportPeerID(p, m_Pk);
-    }
-
-    AtomicSwapCoin from_string(const std::string& value)
-    {
-        if (value == "btc")
-            return AtomicSwapCoin::Bitcoin;
-        else if (value == "ltc")
-            return AtomicSwapCoin::Litecoin;
-        else if (value == "qtum")
-            return AtomicSwapCoin::Qtum;
-
-        return AtomicSwapCoin::Unknown;
+        return m_Pk.ExportNnz(p);
     }
 
     ByteBuffer toByteBuffer(const ECC::Point::Native& value)
@@ -208,12 +186,6 @@ namespace beam::wallet
         ECC::Scalar s;
         value.Export(s);
         return toByteBuffer(s);
-    }
-
-    Amount GetMinimumFee(size_t numberOfOutputs, size_t numberOfKenrnels /*= 1*/)
-    {
-        // Minimum Fee = (number of outputs) * 10 + (number of kernels) * 10
-        return (numberOfOutputs + numberOfKenrnels) * 10;
     }
 
     ErrorType getWalletError(proto::NodeProcessingException::Type exceptionType)
@@ -251,7 +223,7 @@ namespace beam::wallet
     bool ConfirmationBase::IsValid(const PeerID& pid) const
     {
         Point::Native pk;
-        if (!proto::ImportPeerID(pk, pid))
+        if (!pid.ExportNnz(pk))
             return false;
 
         Hash::Value hv;
@@ -292,6 +264,15 @@ namespace beam::wallet
         beam::Blob data(m_offerData);
         Hash::Processor()
             << "SwapOfferSignature"
+            << data
+            >> hv;
+    }
+
+    void SignatureHandler::get_Hash(Hash::Value& hv) const
+    {
+        beam::Blob data(m_data);
+        Hash::Processor()
+            << "Undersign"
             << data
             >> hv;
     }
@@ -433,35 +414,33 @@ namespace beam::wallet
         return {};
     }
 
-    void SwapOffer::SetTxParameters(const PackedTxParameters& parameters)
+    bool LoadReceiverParams(const TxParameters& receiverParams, TxParameters& params)
     {
-        // Do not forget to set other SwapOffer members also!
-        SubTxID subTxID = kDefaultSubTxID;
-        Deserializer d;
-        for (const auto& p : parameters)
+        bool res = false;
+        const TxParameters& p = receiverParams;
+        if (auto peerID = p.GetParameter<WalletID>(beam::wallet::TxParameterID::PeerID); peerID)
         {
-            if (p.first == TxParameterID::SubTxIndex)
-            {
-                // change subTxID
-                d.reset(p.second.data(), p.second.size());
-                d & subTxID;
-                continue;
-            }
-
-            SetParameter(p.first, p.second, subTxID);
+            params.SetParameter(beam::wallet::TxParameterID::PeerID, *peerID);
+            res = true;
         }
+        if (auto peerID = p.GetParameter<PeerID>(beam::wallet::TxParameterID::PeerSecureWalletID); peerID)
+        {
+            params.SetParameter(beam::wallet::TxParameterID::PeerSecureWalletID, *peerID);
+            res &= true;
+        }
+        return res;
     }
 
-    SwapOffer SwapOfferToken::Unpack() const
+    bool IsValidTimeStamp(Timestamp currentBlockTime_s, Timestamp tolerance_s)
     {
-        SwapOffer result(m_TxID);
-        result.SetTxParameters(m_Parameters);
+        Timestamp currentTime_s = getTimestamp();
 
-        if (m_TxID) result.m_txId = *m_TxID;
-        if (m_status) result.m_status = *m_status;
-        if (m_publisherId) result.m_publisherId = *m_publisherId;
-        if (m_coin) result.m_coin = *m_coin;
-        return result;
+        if (currentTime_s > currentBlockTime_s + tolerance_s)
+        {
+            LOG_INFO() << "It seems that last known blockchain tip is not up to date";
+            return false;
+        }
+        return true;
     }
 
     bool TxDescription::canResume() const
@@ -546,6 +525,70 @@ namespace beam::wallet
 
         assert(false && "Unknown TX status!");
         return "unknown";
+    }
+
+    /// Return empty string if second currency exchange rate is not presented
+    std::string TxDescription::getAmountInSecondCurrency(ExchangeRate::Currency secondCurrency) const
+    {
+        auto exchangeRatesOptional = GetParameter<std::vector<ExchangeRate>>(TxParameterID::ExchangeRates);
+        if (exchangeRatesOptional)
+        {
+            std::vector<ExchangeRate>& rates = *exchangeRatesOptional;
+            for (const auto r : rates)
+            {
+                if (r.m_currency == ExchangeRate::Currency::Beam &&
+                    r.m_unit == secondCurrency &&
+                    r.m_rate != 0)
+                {
+                    cpp_dec_float_50 dec_first(m_amount);
+                    dec_first /= Rules::Coin;
+                    cpp_dec_float_50 dec_second(r.m_rate);
+                    dec_second /= Rules::Coin;
+                    cpp_dec_float_50 product = dec_first * dec_second;
+
+                    std::ostringstream oss;
+                    uint32_t precision = secondCurrency == ExchangeRate::Currency::Usd
+                                            ? 2
+                                            : std::lround(std::log10(Rules::Coin));
+                    oss.precision(precision);
+                    oss << std::fixed << product;
+
+                    return oss.str();
+                }
+            }
+        }
+        return "";
+    }
+
+    std::string TxDescription::getToken() const
+    {
+        auto token = GetParameter<std::string>(TxParameterID::OriginalToken);
+        if (token)
+        {
+            return *token;
+        }
+        return {};
+    }
+
+    std::string TxDescription::getSenderIdentity() const
+    {
+        return getIdentity(m_sender);
+    }
+
+    std::string TxDescription::getReceiverIdentity() const
+    {
+        return getIdentity(!m_sender);
+    }
+
+    std::string TxDescription::getIdentity(bool isSender) const
+    {
+        auto v = isSender ? GetParameter<PeerID>(TxParameterID::MySecureWalletID)
+            : GetParameter<PeerID>(TxParameterID::PeerSecureWalletID);
+        if (v)
+        {
+            return std::to_string(*v);
+        }
+        return {};
     }
 
     uint64_t get_RandomID()

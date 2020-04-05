@@ -34,6 +34,7 @@ namespace beam::wallet
         void OnCloseFailed(const laser::ChannelIDPtr& chID) override;
         void OnUpdateStarted(const laser::ChannelIDPtr& chID) override;
         void OnUpdateFinished(const laser::ChannelIDPtr& chID) override;
+        void OnTransferFailed(const laser::ChannelIDPtr& chID) override;
     private:
         const IWalletDB::Ptr& m_walletDB;
         const po::variables_map& m_vm;
@@ -44,7 +45,6 @@ namespace beam::wallet
                          Amount* aTrg,
                          Amount* fee,
                          WalletID* receiverWalletID,
-                         Height* locktime,
                          bool skipReceiverWalletID = false);
     std::vector<std::string> LoadLaserChannelsIdsFromDB(const IWalletDB::Ptr& walletDB);
     std::vector<std::string> ParseLaserChannelsIdsFromStr(const std::string& chIDsStr);

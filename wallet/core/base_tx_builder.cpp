@@ -97,7 +97,7 @@ namespace beam::wallet
     BaseTxBuilder::BaseTxBuilder(BaseTransaction& tx, SubTxID subTxID, const AmountList& amountList, Amount fee)
         : m_Tx{ tx }
         , m_SubTxID(subTxID)
-        , m_AssetId(0)
+        , m_AssetId(Asset::s_InvalidID)
         , m_AmountList{ amountList }
         , m_Fee{ fee }
         , m_ChangeBeam{0}
@@ -750,19 +750,21 @@ namespace beam::wallet
     Transaction::Ptr BaseTxBuilder::CreateTransaction()
     {
         assert(m_Kernel);
+
+        const auto& kernelHeight = m_Kernel->m_Height; // alias
         // Don't display in log infinite max height
-        if (m_Kernel->m_Height.m_Max == MaxHeight)
+        if (kernelHeight.m_Max == MaxHeight)
         {
             LOG_INFO() << m_Tx.GetTxID() << "[" << m_SubTxID << "]"
                 << " Transaction created. Kernel: " << GetKernelIDString()
-                << ", min height: " << m_Kernel->m_Height.m_Min;
+                << ", min height: " << kernelHeight.m_Min;
         }
         else
         {
             LOG_INFO() << m_Tx.GetTxID() << "[" << m_SubTxID << "]"
                 << " Transaction created. Kernel: " << GetKernelIDString()
-                << ", min height: " << m_Kernel->m_Height.m_Min
-                << ", max height: " << m_Kernel->m_Height.m_Max;
+                << ", min height: " << kernelHeight.m_Min
+                << ", max height: " << kernelHeight.m_Max;
         }
 
         // create transaction

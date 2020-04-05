@@ -51,15 +51,17 @@ namespace beam::wallet
         bool ShouldNotifyAboutChanges(TxParameterID paramID) const override;
         bool IsLoopbackTransaction() const;
         AssetIssueTxBuilder& GetTxBuilder();
+        void ConfirmAsset();
 
         enum State : uint8_t
         {
             Initial,
-            MakingInputs,
-            MakingOutputs,
-            MakingKernels,
+            AssetConfirm,
+            AssetCheck,
+            Making,
             Registration,
-            KernelConfirmation
+            KernelConfirmation,
+            Finalizing
         };
         State GetState() const;
 

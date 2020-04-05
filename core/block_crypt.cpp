@@ -20,6 +20,30 @@
 
 namespace beam
 {
+	/////////////
+	// PeerID
+	bool PeerID::ExportNnz(ECC::Point::Native& pt) const
+	{
+		ECC::Point pk;
+		pk.m_X = Cast::Down<ECC::uintBig>(*this);
+		pk.m_Y = 0;
+
+		return pt.ImportNnz(pk);
+	}
+
+	bool PeerID::Import(const ECC::Point::Native& pt)
+	{
+		ECC::Point pk = pt;
+		*this = pk.m_X;
+		return !pk.m_Y;
+	}
+
+	void PeerID::FromSk(ECC::Scalar::Native& sk)
+	{
+		ECC::Point::Native pt = ECC::Context::get().G * sk;
+		if (!Import(pt))
+			sk = -sk;
+	}
 
 	/////////////
 	// HeightRange
@@ -31,8 +55,8 @@ namespace beam
 
 	void HeightRange::Intersect(const HeightRange& x)
 	{
-		m_Min = std::max(m_Min, x.m_Min);
-		m_Max = std::min(m_Max, x.m_Max);
+		std::setmax(m_Min, x.m_Min);
+		std::setmin(m_Max, x.m_Max);
 	}
 
 	bool HeightRange::IsEmpty() const
@@ -387,21 +411,36 @@ namespace beam
 #pragma pack (push, 1)
 	struct Output::PackedKA
 	{
-		Key::ID::Packed m_Kid;
 		uintBigFor<Asset::ID>::Type m_AssetID;
+		Key::ID::Packed m_Kid; // for historical reasons: Key::ID should be last. All new data should be added above.
 	};
 #pragma pack (pop)
 
-	void Output::Create(Height hScheme, ECC::Scalar::Native& sk, Key::IKdf& coinKdf, const CoinID& cid, Key::IPKdf& tagKdf, bool bPublic /* = false */)
+	void Output::Create(Height hScheme, ECC::Scalar::Native& sk, Key::IKdf& coinKdf, const CoinID& cid, Key::IPKdf& tagKdf, OpCode::Enum eOp)
 	{
 		CoinID::Worker wrk(cid);
-		wrk.Create(sk, m_Commitment, coinKdf);
+
+		bool bUseCoinKdf = true;
+		switch (eOp)
+		{
+		case OpCode::Mpc_1:
+		case OpCode::Mpc_2:
+			bUseCoinKdf = false;
+			break;
+
+		default:
+			wrk.Create(sk, m_Commitment, coinKdf);
+		}
 
 		ECC::Scalar::Native skSign = sk;
 		if (cid.m_AssetID)
 		{
+			ECC::Hash::Value hv;
+			if (!bUseCoinKdf)
+				cid.get_Hash(hv);
+
 			m_pAsset = std::make_unique<Asset::Proof>();
-			m_pAsset->Create(wrk.m_hGen, skSign, cid.m_Value, cid.m_AssetID, wrk.m_hGen);
+			m_pAsset->Create(wrk.m_hGen, skSign, cid.m_Value, cid.m_AssetID, wrk.m_hGen, bUseCoinKdf ? nullptr : &hv);
 		}
 
 		ECC::Oracle oracle;
@@ -411,7 +450,7 @@ namespace beam
 		cp.m_Value = cid.m_Value;
 		GenerateSeedKid(cp.m_Seed.V, m_Commitment, tagKdf);
 
-		if (bPublic || m_Coinbase)
+		if ((OpCode::Public == eOp) || m_Coinbase)
 		{
 			Key::ID::Packed kid;
 			cp.m_Blob.p = &kid;
@@ -430,8 +469,28 @@ namespace beam
 			kida.m_Kid = cid;
 			kida.m_AssetID = cid.m_AssetID;
 
-			m_pConfidential.reset(new ECC::RangeProof::Confidential);
-			m_pConfidential->Create(skSign, cp, oracle, &wrk.m_hGen);
+			if (OpCode::Mpc_2 != eOp)
+				m_pConfidential.reset(new ECC::RangeProof::Confidential);
+			else
+				assert(m_pConfidential);
+
+			if (bUseCoinKdf)
+				m_pConfidential->Create(skSign, cp, oracle, &wrk.m_hGen);
+			else
+			{
+				ECC::RangeProof::Confidential::Nonces nonces; // not required, leave it zero (set in c'tor)
+
+				if (OpCode::Mpc_1 == eOp)
+				{
+					ZeroObject(m_pConfidential->m_Part2);
+					m_pConfidential->CoSign(nonces, skSign, cp, oracle, ECC::RangeProof::Confidential::Phase::Step2, &wrk.m_hGen); // stop after Part2
+				}
+				else
+				{
+					// by now Part2 and Part3 
+					m_pConfidential->CoSign(nonces, skSign, cp, oracle, ECC::RangeProof::Confidential::Phase::Finalize, &wrk.m_hGen);
+				}
+			}
 		}
 	}
 
@@ -567,6 +626,8 @@ namespace beam
 
 	void TxKernelStd::UpdateID()
 	{
+		m_Internal.m_HasNonStd = false;
+
 		ECC::Hash::Processor hp;
 		HashBase(hp);
 
@@ -594,6 +655,16 @@ namespace beam
 
 		HashNested(hp);
 		hp >> m_Internal.m_ID;
+
+		for (auto it = m_vNested.begin(); m_vNested.end() != it; it++)
+		{
+			const TxKernel& v = *(*it);
+			if (v.m_Internal.m_HasNonStd)
+			{
+				m_Internal.m_HasNonStd = true;
+				break;
+			}
+		}
 	}
 
 	bool TxKernel::IsValidBase(Height hScheme, ECC::Point::Native& exc, const TxKernel* pParent, ECC::Point::Native* pComm) const
@@ -611,12 +682,6 @@ namespace beam
 			if ((m_Height.m_Min > pParent->m_Height.m_Min) ||
 				(m_Height.m_Max < pParent->m_Height.m_Max))
 				return false; // parent Height range must be contained in ours.
-		}
-		else
-		{
-			if ((hScheme >= r.pForks[2].m_Height) && (m_Height.m_Min < r.pForks[2].m_Height))
-				// Starting from Fork2 non-embedded kernels must have appropriate min height
-				return false;
 		}
 
 		if (!m_vNested.empty())
@@ -667,8 +732,14 @@ namespace beam
 	bool TxKernelStd::IsValid(Height hScheme, ECC::Point::Native& exc, const TxKernel* pParent /* = nullptr */) const
 	{
 		const Rules& r = Rules::get(); // alias
-		if ((hScheme < r.pForks[1].m_Height) && m_pRelativeLock)
-			return false; // unsupported for that version
+		if (m_pRelativeLock)
+		{
+			if (hScheme < r.pForks[1].m_Height)
+				return false; // unsupported for that version
+
+			if ((hScheme >= r.pForks[2].m_Height) && !m_pRelativeLock->m_LockHeight)
+				return false; // zero m_LockHeight makes no sense, but allowed prior to Fork2
+		}
 
 		ECC::Point::Native pt;
 		if (!pt.ImportNnz(m_Commitment))
@@ -696,22 +767,10 @@ namespace beam
 
 	int TxKernel::cmp(const TxKernel& v) const
 	{
-		const Rules& r = Rules::get();
-		bool b2Me = (m_Height.m_Min >= r.pForks[2].m_Height);
-		bool b2Other = (v.m_Height.m_Min >= r.pForks[2].m_Height);
+		CMP_MEMBER(m_Internal.m_HasNonStd)
 
-		if (b2Me)
-		{
-			if (!b2Other)
-				return 1;
-
-			CMP_MEMBER_EX(m_Internal.m_ID)
-		}
-		else
-		{
-			if (b2Other)
-				return -1;
-		}
+		if (m_Internal.m_HasNonStd)
+			return 0; // no sort for non-std kernels (always keep their order)
 
 		Subtype::Enum t0 = get_Subtype();
 		Subtype::Enum t1 = v.get_Subtype();
@@ -722,7 +781,7 @@ namespace beam
 
 	int TxKernel::cmp_Subtype(const TxKernel&) const
 	{
-		return 0;
+		return 0; // currentl unreachable: all kernels besides TxKernelStd are defined as 'non-standard', and should not be compared
 	}
 
 	int TxKernelStd::cmp_Subtype(const TxKernel& v_) const
@@ -819,6 +878,7 @@ namespace beam
 
 	void TxKernelNonStd::UpdateID()
 	{
+		m_Internal.m_HasNonStd = true; // I'm non-standard already
 		UpdateMsg();
 		MsgToID();
 	}
@@ -885,14 +945,10 @@ namespace beam
 
 		exc += pPt[0];
 
-		if (m_Owner == Zero)
+		if (!m_Owner.ExportNnz(pPt[1]))
 			return false;
 
-		ECC::Point pkOwner;
-		pkOwner.m_X = m_Owner;
-		pkOwner.m_Y = 0;
-		if (!pPt[1].Import(pkOwner))
-			return false;
+		assert(m_Owner != Zero); // the above ensures this
 
 		// prover must prove knowledge of excess AND m_AssetID sk
 		return m_Signature.IsValid(ECC::Context::get().m_Sig.m_CfgG2, m_Msg, m_Signature.m_pK, pPt);
@@ -906,7 +962,7 @@ namespace beam
 		m_Owner = v.m_Owner;
 	}
 
-	void TxKernelAssetControl::Sign(const ECC::Scalar::Native& sk, const ECC::Scalar::Native& skAsset)
+	void TxKernelAssetControl::Sign_(const ECC::Scalar::Native& sk, const ECC::Scalar::Native& skAsset)
 	{
 		m_Commitment = ECC::Context::get().G * sk;
 		UpdateMsg();
@@ -916,6 +972,16 @@ namespace beam
 		m_Signature.Sign(ECC::Context::get().m_Sig.m_CfgG2, m_Msg, m_Signature.m_pK, pSk, &res);
 
 		MsgToID();
+	}
+
+	void TxKernelAssetControl::Sign(const ECC::Scalar::Native& sk, Key::IKdf& kdf, const Asset::Metadata& md)
+	{
+		ECC::Scalar::Native skAsset;
+		kdf.DeriveKey(skAsset, md.m_Hash);
+
+		m_Owner.FromSk(skAsset);
+
+		Sign_(sk, skAsset);
 	}
 
 	/////////////
@@ -972,7 +1038,7 @@ namespace beam
 		if (!TxKernelAssetControl::IsValid(hScheme, exc, pParent))
 			return false;
 
-		if (m_MetaData.size() > Asset::Info::s_MetadataMaxSize)
+		if (m_MetaData.m_Value.size() > Asset::Info::s_MetadataMaxSize)
 			return false;
 
 		ECC::Point::Native pt = ECC::Context::get().H * Rules::get().CA.DepositForList;
@@ -993,9 +1059,12 @@ namespace beam
 	void TxKernelAssetCreate::HashSelfForMsg(ECC::Hash::Processor& hp) const
 	{
 		TxKernelAssetControl::HashSelfForMsg(hp);
-		hp
-			<< m_MetaData.size()
-			<< Blob(m_MetaData);
+		hp << m_MetaData.m_Hash;
+	}
+
+	void TxKernelAssetCreate::Sign(const ECC::Scalar::Native& sk, Key::IKdf& kdf)
+	{
+		TxKernelAssetControl::Sign(sk, kdf, m_MetaData);
 	}
 
 	/////////////
@@ -1655,6 +1724,19 @@ namespace beam
 		return 0; // should not be reached
 	}
 
+	Height Rules::get_ForkMaxHeightSafe(size_t iFork) const
+	{
+		assert(iFork < _countof(pForks));
+		if (iFork + 1 < _countof(pForks))
+		{
+			Height h = pForks[iFork + 1].m_Height;
+			if (h < MaxHeight)
+				return h - 1;
+		}
+
+		return MaxHeight;
+	}
+
 	const HeightHash& Rules::get_LastFork() const
 	{
 		size_t i = _countof(pForks);
@@ -2255,6 +2337,8 @@ namespace beam
 
 	/////////////
 	// Asset
+	const PeerID Asset::s_InvalidOwnerID = Zero;
+
 	void Asset::Base::get_Generator(ECC::Point::Native& res, ECC::Point::Storage& res_s) const
 	{
 		assert(m_ID);
@@ -2289,8 +2373,18 @@ namespace beam
 		m_Value = Zero;
 		m_Owner = Zero;
 		m_LockHeight = 0;
-		m_Metadata.clear();
+		m_Metadata.Reset();
 	}
+
+	bool Asset::Info::IsEmpty() const
+	{
+	    return m_Value == Zero && m_Owner == Zero && m_LockHeight == Zero && m_Metadata.m_Value.empty();
+	}
+
+	bool Asset::Info::IsValid() const
+    {
+	    return m_Owner != Zero && m_LockHeight != Zero;
+    }
 
 	void Asset::Full::get_Hash(ECC::Hash::Value& hv) const
 	{
@@ -2300,9 +2394,44 @@ namespace beam
 			<< m_Value
 			<< m_Owner
 			<< m_LockHeight
-			<< m_Metadata.size()
-			<< Blob(m_Metadata)
+			<< m_Metadata.m_Hash
 			>> hv;
+	}
+
+	void Asset::Metadata::Reset()
+	{
+		m_Value.clear();
+		UpdateHash();
+	}
+
+	void Asset::Metadata::UpdateHash()
+	{
+		if (m_Value.empty())
+		{
+			m_Hash = Zero;
+		}
+		else
+		{
+			ECC::Hash::Processor()
+				<< "B.AssetMeta"
+				<< m_Value.size()
+				<< Blob(m_Value)
+				>> m_Hash;
+		}
+	}
+
+	void Asset::Metadata::get_Owner(PeerID& res, Key::IPKdf& pkdf) const
+	{
+		ECC::Point::Native pt;
+		pkdf.DerivePKeyG(pt, m_Hash);
+		res.Import(pt);
+	}
+
+	bool Asset::Info::Recognize(Key::IPKdf& pkdf) const
+	{
+		PeerID pid;
+		m_Metadata.get_Owner(pid, pkdf);
+		return pid == m_Owner;
 	}
 
 	const ECC::Point::Compact& Asset::Proof::get_H()
@@ -2325,41 +2454,39 @@ namespace beam
 		return true;
 	}
 
-	void Asset::Proof::Create(ECC::Point::Native& genBlinded, ECC::Scalar::Native& skInOut, Amount val, Asset::ID aid)
+	void Asset::Proof::Create(ECC::Point::Native& genBlinded, ECC::Scalar::Native& skInOut, Amount val, Asset::ID aid, const ECC::Hash::Value* phvSeed)
 	{
 		ECC::Point::Native gen;
 		if (aid)
 			Base(aid).get_Generator(gen);
-		else
-			get_H().Assign(gen, true);
 
-		Create(genBlinded, skInOut, val, aid, gen);
+		Create(genBlinded, skInOut, val, aid, gen, phvSeed);
 	}
 
-	void Asset::Proof::get_skGen(ECC::Scalar::Native& skGen, const ECC::Scalar::Native& sk, Amount val, Asset::ID aid)
+	void Asset::Proof::Create(ECC::Point::Native& genBlinded, ECC::Scalar::Native& skInOut, Amount val, Asset::ID aid, const ECC::Point::Native& gen, const ECC::Hash::Value* phvSeed)
 	{
 		ECC::NonceGenerator nonceGen("out-sk-asset");
-
 		ECC::NoLeak<ECC::Scalar> k;
-		k.V = sk;
+
+		k.V = skInOut;
 		nonceGen << k.V.m_Value;
 
-		ECC::Hash::Processor()
+		ECC::Hash::Processor hp;
+		hp
 			<< aid
-			<< val
-			>> k.V.m_Value;
+			<< val;
+		if (phvSeed)
+			hp << (*phvSeed);
 
-		nonceGen
-			<< k.V.m_Value
-			>> skGen; // blinding factor for generator
-	}
+		hp >> k.V.m_Value;
+		nonceGen << k.V.m_Value;
 
-	void Asset::Proof::Create(ECC::Point::Native& genBlinded, ECC::Scalar::Native& skInOut, Amount val, Asset::ID aid, const ECC::Point::Native& gen)
-	{
-		ECC::Scalar::Native skGen;
-		get_skGen(skGen, skInOut, val, aid);
-		Create(genBlinded, skGen, aid, gen);
-		ModifySk(skInOut, skGen, val);
+		ECC::Scalar::Native skAsset;
+		nonceGen >> skAsset;
+
+		ModifySk(skInOut, skAsset, val);
+
+		Create(genBlinded, skAsset, aid, gen);
 	}
 
 	void Asset::Proof::Create(ECC::Point::Native& genBlinded, const ECC::Scalar::Native& skGen, Asset::ID aid, const ECC::Point::Native& gen)

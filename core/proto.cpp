@@ -150,20 +150,12 @@ void InitCipherIV(AES::StreamCipher& c, const ECC::Hash::Value& hvSecret, const 
     c.m_nBuf = 0;
 }
 
-bool ImportPeerID(ECC::Point::Native& res, const PeerID& pid)
-{
-    ECC::Point pt;
-    pt.m_X = pid;
-    pt.m_Y = 0;
-
-    return res.ImportNnz(pt);
-}
-
 bool InitViaDiffieHellman(const ECC::Scalar::Native& myPrivate, const PeerID& remotePublic, AES::Encoder& enc, ECC::Hash::Mac& hmac, AES::StreamCipher* pCipherOut, AES::StreamCipher* pCipherIn)
 {
     // Diffie-Hellman
     ECC::Point::Native p;
-    ImportPeerID(p, remotePublic);
+    if (!remotePublic.ExportNnz(p))
+        return false;
 
     ECC::Point::Native ptSecret = p * myPrivate;
 
@@ -181,7 +173,7 @@ bool InitViaDiffieHellman(const ECC::Scalar::Native& myPrivate, const PeerID& re
     if (pCipherIn)
     {
         PeerID myPublic;
-        Sk2Pk(myPublic, Cast::NotConst(myPrivate)); // my private must have been already normalized. Should not be modified.
+        myPublic.FromSk(Cast::NotConst(myPrivate)); // my private must have been already normalized. Should not be modified.
         InitCipherIV(*pCipherIn, hvSecret.V, myPublic);
     }
 
@@ -196,19 +188,11 @@ void ProtocolPlus::InitCipher()
         NodeConnection::ThrowUnexpected();
 }
 
-void Sk2Pk(PeerID& res, ECC::Scalar::Native& sk)
-{
-    ECC::Point pt = ECC::Point::Native(ECC::Context::get().G * sk);
-    if (pt.m_Y)
-        sk = -sk;
-
-    res = pt.m_X;
-}
 
 bool Bbs::Encrypt(ByteBuffer& res, const PeerID& publicAddr, ECC::Scalar::Native& nonce, const void* p, uint32_t n)
 {
     PeerID myPublic;
-    Sk2Pk(myPublic, nonce);
+    myPublic.FromSk(nonce);
 
     AES::Encoder enc;
     AES::StreamCipher cOut;
@@ -457,7 +441,7 @@ std::ostream& operator << (std::ostream& s, const NodeConnection::DisconnectReas
         break;
 
     case NodeConnection::DisconnectReason::Protocol:
-        s << "Protocol " << r.m_eProtoCode;
+        s << "Protocol " << static_cast<uint32_t>(r.m_eProtoCode);
         break;
 
     case NodeConnection::DisconnectReason::ProcessingExc:
@@ -600,7 +584,7 @@ void NodeConnection::SecureConnect()
         ThrowUnexpected("SChannel not supported");
 
     SChannelInitiate msg;
-    Sk2Pk(msg.m_NoncePub, m_Protocol.m_MyNonce);
+    msg.m_NoncePub.FromSk(m_Protocol.m_MyNonce);
     Send(msg);
 }
 
@@ -686,14 +670,14 @@ void NodeConnection::OnMsg(Login0&& msg0)
 	Login msg;
 	msg.m_Flags = msg0.m_Flags;
 
-	OnLoginInternal(MaxHeight, std::move(msg));
+	OnLoginInternal(std::move(msg));
 }
 
 void NodeConnection::OnMsg(Login&& msg)
 {
 	if (msg.m_Cfgs.empty()) // Peers send cfgs only on 1st login
 	{
-		OnLoginInternal(MaxHeight, std::move(msg));
+		OnLoginInternal(std::move(msg));
 		return;
 	}
 
@@ -706,16 +690,25 @@ void NodeConnection::OnMsg(Login&& msg)
 		const HeightHash* pFork = r.FindFork(msg.m_Cfgs[i]);
 		if (pFork)
 		{
-			Height hMaxScheme = MaxHeight;
 			if (&r.get_LastFork() != pFork)
 			{
-				if (i + 1 != msg.m_Cfgs.size())
-					break; // overlap config found, but then we have incompatible forks.
+                size_t nMyFork = pFork - r.pForks;
 
-				hMaxScheme = pFork[1].m_Height - 1;
+                Height hScheme = pFork[1].m_Height;
+
+                LOG_WARNING() << "Peer " << m_Connection->peer_address() << " incompatible with HF " << (nMyFork + 1) << ", Height=" << hScheme;
+
+                Height hMinScheme = get_MinPeerFork();
+                if (hMinScheme >= hScheme)
+                    ThrowUnexpected("Legacy", NodeProcessingException::Type::Incompatible);
 			}
 
-			OnLoginInternal(hMaxScheme, std::move(msg));
+            if (i + 1 != msg.m_Cfgs.size())
+            {
+                LOG_WARNING() << "Peer " << m_Connection->peer_address() << " has unknown fork: " << msg.m_Cfgs[i + 1];
+            }
+
+			OnLoginInternal(std::move(msg));
 			return;
 		}
 	}
@@ -735,7 +728,7 @@ void NodeConnection::OnMsg(Login&& msg)
 	ThrowUnexpected(os.str().c_str(), NodeProcessingException::Type::Incompatible);
 }
 
-void NodeConnection::OnLoginInternal(Height hScheme, Login&& msg)
+void NodeConnection::OnLoginInternal(Login&& msg)
 {
 	if (LoginFlags::ExtensionsBeforeHF1 != (LoginFlags::ExtensionsBeforeHF1 & msg.m_Flags))
 	{
@@ -750,21 +743,9 @@ void NodeConnection::OnLoginInternal(Height hScheme, Login&& msg)
 	{
 		const uint32_t nMask = LoginFlags::ExtensionsAll;
 		uint32_t nFlags2 = nMask & msg.m_Flags;
-		if (nFlags2 != nMask)
-		{
+		if (nFlags2 != nMask) {
 			LOG_WARNING() << "Peer " << m_Connection->peer_address() << " Uses older protocol: " << nFlags2;
-
-			hScheme = std::min(hScheme, Rules::get().pForks[1].m_Height - 1); // doesn't support extensions - must be before the 1st fork
 		}
-	}
-
-	if (hScheme < MaxHeight)
-	{
-		LOG_WARNING() << "Peer " << m_Connection->peer_address() << " incompatible with fork " << (hScheme + 1);
-
-		Height hMinScheme = get_MinPeerFork();
-		if (hScheme < hMinScheme)
-			ThrowUnexpected("Legacy", NodeProcessingException::Type::Incompatible);
 	}
 
 	OnLogin(std::move(msg));
@@ -790,7 +771,7 @@ void NodeConnection::ProveID(ECC::Scalar::Native& sk, uint8_t nIDType)
 
     Authentication msgOut;
     msgOut.m_IDType = nIDType;
-    Sk2Pk(msgOut.m_ID, sk);
+    msgOut.m_ID.FromSk(sk);
     msgOut.m_Sig.Sign(hv, sk);
 
     Send(msgOut);
@@ -802,9 +783,9 @@ void NodeConnection::HashAddNonce(ECC::Hash::Processor& hp, bool bRemote)
         hp << m_Protocol.m_RemoteNonce;
     else
     {
-        ECC::Hash::Value hv;
-        Sk2Pk(hv, m_Protocol.m_MyNonce);
-        hp << hv;
+        PeerID pid;
+        pid.FromSk(m_Protocol.m_MyNonce);
+        hp << pid;
     }
 }
 
@@ -916,12 +897,8 @@ void NodeConnection::OnMsg(Authentication&& msg)
     ECC::Hash::Value hv;
     hp >> hv;
 
-    ECC::Point pt;
-    pt.m_X = msg.m_ID;
-    pt.m_Y = 0;
-
     ECC::Point::Native p;
-    if (!p.Import(pt))
+    if (!msg.m_ID.ExportNnz(p))
         ThrowUnexpected();
 
     if (!msg.m_Sig.IsValid(hv, p))
@@ -963,6 +940,29 @@ void NodeConnection::OnMsg(Time&& msg)
 	}
 }
 
+void NodeConnection::OnMsg(EventsLegacy&& msg)
+{
+    // in-place convert. Remove this after Fork2
+    Serializer ser;
+
+    for (size_t i = 0; i < msg.m_Events.size(); i++)
+    {
+        const proto::Event::Legacy& evt0 = msg.m_Events[i];
+
+        proto::Event::Utxo evt1;
+        evt0.Export(evt1);
+
+        ser & evt0.m_Height;
+        ser & evt1.s_Type;
+        ser & evt1;
+    }
+
+    Events msgOut;
+    ser.swap_buf(msgOut.m_Events);
+
+    Cast::Down<INodeMsgHandler>(*this).OnMsg(std::move(msgOut));
+}
+
 /////////////////////////
 // NodeConnection::Server
 void NodeConnection::Server::Listen(const io::Address& addr)
@@ -971,32 +971,98 @@ void NodeConnection::Server::Listen(const io::Address& addr)
 }
 
 /////////////////////////
-// UtxoEvent
-void UtxoEvent::ShieldedDelta::Set(Key::ID::Packed& kid, AuxBuf1& buf1, const Shielded& s)
+// Event
+void Event::IParser::ProceedOnce(Deserializer& der)
 {
-    const uint8_t* p = reinterpret_cast<const uint8_t*>(&s);
-    static_assert(sizeof(s) == sizeof(kid) + AuxBuf1::nBytes + sizeof(m_pBuf));
-	memcpy(&kid, p, sizeof(kid));
-	memcpy(buf1.m_pData, p + sizeof(kid), buf1.nBytes);
-    memcpy(m_pBuf, p + sizeof(kid) + buf1.nBytes, sizeof(m_pBuf));
+    Type::Enum eType;
+    der & eType;
+
+    switch (eType)
+    {
+#define THE_MACRO(id, name) \
+    case Type::name: \
+        { \
+            name evt; \
+            der & evt; \
+            OnEvent(evt); \
+        } \
+        break;
+
+        BeamEventsAll(THE_MACRO)
+#undef THE_MACRO
+
+    default:
+        throw std::runtime_error("Unk proto/Event");
+    }
 }
 
-void UtxoEvent::ShieldedDelta::Get(const Key::ID::Packed& kid, const AuxBuf1& buf1, Shielded& s) const
+void Event::IParser::ProceedOnce(const Blob& blob)
 {
-    uint8_t* p = reinterpret_cast<uint8_t*>(&s);
-
-    memcpy(p, &kid, sizeof(kid));
-    memcpy(p + sizeof(kid), buf1.m_pData, buf1.nBytes);
-    memcpy(p + sizeof(kid) + buf1.nBytes, m_pBuf, sizeof(m_pBuf));
+    Deserializer der;
+    der.reset(blob.p, blob.n);
+    ProceedOnce(der);
 }
 
-void UtxoEvent::get_Cid(CoinID& cid) const
+uint32_t Event::IGroupParser::Proceed(const Blob& blob)
 {
-    assert(!(Flags::Shielded & m_Flags));
+    uint32_t nCount = 0;
+    Deserializer der;
 
-    Cast::Down<Key::ID>(cid) = m_Kid;
-    cid.m_Value = m_Value;
-    m_AssetID.Export(cid.m_AssetID);
+    for (der.reset(blob.p, blob.n); der.bytes_left(); nCount++)
+    {
+        der & m_Height;
+        ProceedOnce(der);
+    }
+
+    return nCount;
+}
+
+void Event::Utxo::Dump(std::ostringstream& os) const
+{
+    char ch = (Flags::Add & m_Flags) ? '+' : '-';
+    os << ch << "Utxo " << m_Cid << ", Maturity=" << m_Maturity;
+}
+
+void Event::Shielded::Dump(std::ostringstream& os) const
+{
+    char ch = (Flags::Add & m_Flags) ? '+' : '-';
+    os << ch << "Shielded Value=" << m_Value << ", TxoID=" << m_ID << ", Sender=" << m_Sender;
+}
+
+void Event::AssetCtl::Dump(std::ostringstream& os) const
+{
+    if (Flags::Add & m_Flags)
+        os << '+';
+    if (Flags::Delete & m_Flags)
+        os << '-';
+
+    os << "Asset MetaHash=" << m_Metadata.m_Hash;
+
+    if (m_EmissionChange)
+        os << ", Emit " << m_EmissionChange;
+}
+
+void Event::Legacy::Import(const Utxo& evt)
+{
+    m_Flags = evt.m_Flags ? proto::Event::Flags::Add : 0;
+
+    m_Kid = evt.m_Cid;
+    m_Value = evt.m_Cid.m_Value;
+
+    m_Commitment = evt.m_Commitment;
+    m_Maturity = evt.m_Maturity;
+}
+
+void Event::Legacy::Export(Utxo& evt) const
+{
+    evt.m_Flags = m_Flags ? proto::Event::Flags::Add : 0;
+
+    Cast::Down<Key::ID>(evt.m_Cid) = m_Kid;
+    evt.m_Cid.m_Value = m_Value;
+    evt.m_Cid.m_AssetID = 0;
+
+    evt.m_Commitment = m_Commitment;
+    evt.m_Maturity = m_Maturity;
 }
 
 } // namespace proto

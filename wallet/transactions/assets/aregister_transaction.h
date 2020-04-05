@@ -29,6 +29,7 @@ namespace beam::wallet
 
     class AssetRegisterTransaction : public BaseTransaction
     {
+        typedef BaseTransaction super;
     public:
         class Creator : public BaseTransaction::Creator
         {
@@ -46,18 +47,19 @@ namespace beam::wallet
 
         void UpdateImpl() override;
         bool ShouldNotifyAboutChanges(TxParameterID paramID) const override;
+        bool Rollback(Height height) override;
         bool IsLoopbackTransaction() const;
+        void ConfirmAsset();
         AssetRegisterTxBuilder& GetTxBuilder();
 
         enum State : uint8_t
         {
             Initial,
-            MakingInputs,
-            MakingOutputs,
-            MakingKernels,
+            Making,
             Registration,
             KernelConfirmation,
-            AssetConfirmation
+            AssetConfirmation,
+            Finalizing
         };
         State GetState() const;
 

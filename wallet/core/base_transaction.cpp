@@ -66,8 +66,8 @@ namespace beam::wallet
         , m_Notify{ notify }
         , m_Reason{ reason }
     {
-
     }
+
     bool TransactionFailedException::ShouldNofify() const
     {
         return m_Notify;
@@ -152,12 +152,18 @@ namespace beam::wallet
         }
         catch (const TransactionFailedException & ex)
         {
-            LOG_ERROR() << GetTxID() << " exception msg: " << ex.what();
+            if (ex.what() && strlen(ex.what()))
+            {
+                LOG_ERROR() << GetTxID() << " exception msg: " << ex.what();
+            }
             OnFailed(ex.GetReason(), ex.ShouldNofify());
         }
         catch (const exception & ex)
         {
-            LOG_ERROR() << GetTxID() << " exception msg: " << ex.what();
+            if (ex.what() && strlen(ex.what()))
+            {
+                LOG_ERROR() << GetTxID() << " exception msg: " << ex.what();
+            }
             OnFailed(TxFailureReason::Unknown);
         }
     }
@@ -385,7 +391,7 @@ namespace beam::wallet
         return ret;
     }
 
-    Key::IKdf::Ptr BaseTransaction::get_MasterKdfStrict()
+    Key::IKdf::Ptr BaseTransaction::get_MasterKdfStrict() const
     {
         Key::IKdf::Ptr ret = m_WalletDB->get_MasterKdf();
         if (!ret)
@@ -445,12 +451,12 @@ namespace beam::wallet
             {
                 if (bIn)
                 {
-                    coin.m_confirmHeight = std::min(coin.m_confirmHeight, proofHeight);
+                    std::setmin(coin.m_confirmHeight, proofHeight);
                     coin.m_maturity = proofHeight + Rules::get().Maturity.Std; // so far we don't use incubation for our created outputs
                 }
                 if (bOut)
                 {
-                    coin.m_spentHeight = std::min(coin.m_spentHeight, proofHeight);
+                    std::setmin(coin.m_spentHeight, proofHeight);
                 }
             }
         }

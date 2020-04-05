@@ -7,9 +7,13 @@ target_sources(assets
         aissue_transaction.cpp
         aregister_tx_builder.cpp
         aregister_transaction.cpp
+        aunregister_tx_builder.cpp
+        aunregister_transaction.cpp
+        ainfo_transaction.cpp
         assets_reg_creators.cpp
+        assets_kdf_utils.cpp
 )
-
+target_compile_definitions(assets PUBLIC BEAM_CONFIDENTIAL_ASSETS_SUPPORT)
 target_link_libraries(assets 
     PUBLIC
         wallet

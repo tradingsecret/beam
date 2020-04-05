@@ -14,8 +14,7 @@
 
 #pragma once
 
-#include "wallet_db.h"
-
+#include "wallet/core/wallet_db.h"
 #include <string>
 
 namespace beam::wallet
@@ -29,4 +28,5 @@ WalletAddress GenerateNewAddress(
 
 bool ReadTreasury(ByteBuffer&, const std::string& sPath);
 
+std::string TxIDToString(const TxID& txId);
 }  // namespace beam::wallet

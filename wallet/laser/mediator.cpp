@@ -16,7 +16,7 @@
 
 #include "core/negotiator.h"
 #include "core/lightning_codes.h"
-#include "wallet/core//common_utils.h"
+#include "wallet/core/common_utils.h"
 #include "wallet/laser/connection.h"
 #include "wallet/laser/receiver.h"
 #include "utility/helpers.h"
@@ -24,33 +24,6 @@
 
 namespace
 {
-const beam::Timestamp kToleranceSeconds =
-    60 * beam::wallet::laser::kMaxRolbackHeight;
-
-bool IsValidTimeStamp(beam::Timestamp currentBlockTime_s)
-{
-    beam::Timestamp currentTime_s = beam::getTimestamp();
-
-    if (currentTime_s > currentBlockTime_s + kToleranceSeconds)
-    {
-        LOG_DEBUG() << "It seems that node is not up to date";
-        return false;
-    }
-    return true;
-}
-
-bool IsOutOfSync(beam::Timestamp currentBlockTime_s)
-{
-    beam::Timestamp currentTime_s = beam::getTimestamp();
-
-    if (currentTime_s > currentBlockTime_s + kToleranceSeconds / 2)
-    {
-        LOG_DEBUG() << "Node is out of sync";
-        return true;
-    }
-    return false;
-}
-
 inline bool CanBeHandled(int state)
 {
     return state != beam::Lightning::Channel::State::None &&
@@ -60,29 +33,27 @@ inline bool CanBeHandled(int state)
 
 inline bool CanBeClosed(int state)
 {
-    return state <= beam::Lightning::Channel::State::Closing1 &&
+    return state < beam::Lightning::Channel::State::Closing1 &&
            state != beam::Lightning::Channel::State::OpenFailed &&
            state >= beam::Lightning::Channel::State::Opening1;
 }
 
 inline bool CanBeDeleted(int state)
 {
-    return state == beam::Lightning::Channel::State::None ||
+    return state < beam::Lightning::Channel::State::Opening1 ||
            state == beam::Lightning::Channel::State::OpenFailed ||
            state == beam::Lightning::Channel::State::Closed;
 }
 
-inline bool CanBeLoaded(int state)
-{
-    return state >= beam::Lightning::Channel::State::Opening1 &&
-           CanBeHandled(state);
-}
+const beam::Timestamp kDefaultLaserTolerance = 60 * (beam::Lightning::kMaxBlackoutTime >> 1);
 }  // namespace
 
 namespace beam::wallet::laser
 {
-Mediator::Mediator(const IWalletDB::Ptr& walletDB)
+Mediator::Mediator(const IWalletDB::Ptr& walletDB,
+                   const Lightning::Channel::Params& params)
     : m_pWalletDB(walletDB)
+    , m_Params(params)
 {
     m_myInAddr.m_walletID = Zero;
 }
@@ -96,26 +67,21 @@ void Mediator::OnNewTip()
 {
     LOG_DEBUG() << "LASER OnNewTip";
     if (!ValidateTip())
-    {
         return;
-    }
 
     UpdateChannels();
 
     for (auto& sceduledAction : m_actionsQueue)
-    {
         sceduledAction();
-    }
     m_actionsQueue.clear();
 
-    for (const auto& readyForCloseChannel : m_readyForForgetChannels)
-    {
-        ForgetChannel(readyForCloseChannel);
-        LOG_INFO() << "ForgetChannel: "
-                   << to_hex(readyForCloseChannel->m_pData,
-                             readyForCloseChannel->nBytes);
-    }
-    m_readyForForgetChannels.clear();
+    for (const auto& readyForCloseChannel : m_readyForCloseChannels)
+        ClosingCompleted(readyForCloseChannel);
+    m_readyForCloseChannels.clear();
+
+    for (const auto& openedWithFailChannel : m_openedWithFailChannels)
+        HandleOpenedWithFailChannel(openedWithFailChannel);
+    m_openedWithFailChannels.clear();
 }
 
 void Mediator::OnRolledBack()
@@ -123,14 +89,34 @@ void Mediator::OnRolledBack()
     LOG_DEBUG() << "LASER OnRolledBack";
     for (auto& it: m_channels)
     {
-        auto& ch = it.second;
-        ch->OnRolledBack();
-        if (ch->TransformLastState())
+        auto& channel = it.second;
+        channel->OnRolledBack();
+        if (channel->TransformLastState())
         {
-            ch->UpdateRestorePoint();
-            m_pWalletDB->saveLaserChannel(*ch);
+            channel->UpdateRestorePoint();
+            m_pWalletDB->saveLaserChannel(*channel);
         }
     }
+
+    for (auto& channel: m_closedChannels)
+    {
+        channel->OnRolledBack();
+        if (channel->TransformLastState())
+        {
+            channel->UpdateRestorePoint();
+            m_pWalletDB->saveLaserChannel(*channel);
+            channel->Subscribe();
+
+            m_channels[channel->get_chID()] =
+                std::unique_ptr<Channel>(channel.release());
+        }
+    }
+
+    m_closedChannels.erase(
+        std::remove(m_closedChannels.begin(),
+                    m_closedChannels.end(),
+                    nullptr),
+        m_closedChannels.end());
 }
 
 Block::SystemState::IHistory& Mediator::get_History()
@@ -155,27 +141,27 @@ proto::FlyClient::INetwork& Mediator::get_Net()
 
 void Mediator::OnMsg(const ChannelIDPtr& chID, Blob&& blob)
 {
+    Lock lock(m_mutex);
+
     auto inChID = std::make_shared<ChannelID>(Zero);
-	beam::Negotiator::Storage::Map dataIn;
+    beam::Negotiator::Storage::Map dataIn;
 
-	try
+    try
     {
-		Deserializer der;
-		der.reset(blob.p, blob.n);
+        Deserializer der;
+        der.reset(blob.p, blob.n);
 
-		der & (*inChID);
-		der & Cast::Down<FieldMap>(dataIn);
-	}
-	catch (const std::exception&)
+        der & (*inChID);
+        der & Cast::Down<FieldMap>(dataIn);
+    }
+    catch (const std::exception&)
     {
-		return;
-	}
+        return;
+    }
 
     if (!chID && m_pInputReceiver)
     {
-        LOG_INFO() << "Create incoming: "
-                   << to_hex(inChID->m_pData , inChID->nBytes);
-        OnIncoming(inChID, dataIn);
+        if (!OnIncoming(inChID, dataIn)) return;
     }
     else
     {
@@ -200,45 +186,63 @@ void Mediator::OnMsg(const ChannelIDPtr& chID, Blob&& blob)
     auto& channel = it->second;
 
     channel->OnPeerData(dataIn);
-    channel->LogNewState();
     UpdateChannelExterior(channel);
 }
 
-bool  Mediator::Decrypt(const ChannelIDPtr& chID, uint8_t* pMsg, Blob* blob)
+bool Mediator::Decrypt(const ChannelIDPtr& chID, uint8_t* pMsg, Blob* blob)
 {
     ECC::Scalar::Native sk;
     if (!get_skBbs(sk, chID))
         return false;
 
     if (!proto::Bbs::Decrypt(pMsg, blob->n, sk))
-		return false;
+        return false;
 
-	blob->p = pMsg;
+    blob->p = pMsg;
     return true;
 }
 
-void Mediator::SetNetwork(const proto::FlyClient::NetworkStd::Ptr& net)
+void Mediator::SetNetwork(const proto::FlyClient::NetworkStd::Ptr& net, bool mineOutgoing)
 {
-    m_pConnection = std::make_shared<Connection>(net);
+    m_pConnection = std::make_shared<Connection>(net, mineOutgoing);
 }
 
-void Mediator::WaitIncoming(Amount aMy, Amount aTrg, Amount fee, Height locktime)
+void Mediator::ListenClosedChannelsWithPossibleRollback()
+{
+    auto channelEntities =
+        m_pWalletDB->loadLaserChannels(Lightning::Channel::State::Closed);
+
+    for (const auto& channelEntity : channelEntities)
+    {
+        const auto& chID = std::get<LaserFields::LASER_CH_ID>(channelEntity);
+        auto channelIdStr = beam::to_hex(chID.m_pData, chID.nBytes);
+        auto p_channelID = Channel::ChannelIdFromString(channelIdStr);
+        if (!p_channelID)
+        {
+            LOG_ERROR() << "Incorrect channel ID format: " << channelIdStr;
+            return;
+        }
+        auto channel = LoadChannelInternal(p_channelID);
+        if (channel->IsSafeToForget()) continue;
+
+        m_closedChannels.push_back(std::move(channel));
+    }
+}
+
+void Mediator::WaitIncoming(Amount aMy, Amount aTrg, Amount fee)
 {
     if (!IsEnoughCoinsAvailable(aMy + fee))
     {
         LOG_ERROR() << "Your available amount less then required.";
         auto zeroID = std::make_shared<ChannelID>(Zero);
         for (auto observer : m_observers)
-        {
             observer->OnOpenFailed(zeroID);
-        }
         return;
     }
 
     m_myInAllowed = aMy;
     m_trgInAllowed = aTrg;
     m_feeAllowed = fee;
-    m_locktimeAllowed = locktime;
 
     m_pInputReceiver = std::make_unique<Receiver>(*this, nullptr);
     m_myInAddr = GenerateNewAddress(
@@ -246,6 +250,7 @@ void Mediator::WaitIncoming(Amount aMy, Amount aTrg, Amount fee, Height locktime
         "laser_in",
         WalletAddress::ExpirationStatus::Never,
         false);
+    m_pWalletDB->saveAddress(m_myInAddr, true);
 
     Subscribe();
 }
@@ -256,7 +261,6 @@ void Mediator::StopWaiting()
     m_myInAllowed = 0;
     m_trgInAllowed = 0;
     m_feeAllowed = 0;
-    m_locktimeAllowed = 0;
     m_pInputReceiver.reset();
     m_myInAddr.m_walletID = Zero;
 }
@@ -269,7 +273,7 @@ WalletID Mediator::getWaitingWalletID() const
 bool Mediator::Serve(const std::string& channelID)
 {
     LOG_DEBUG() << "Channel: " << channelID << " restore process started";
-    auto p_channelID = RestoreChannel(channelID);
+    auto p_channelID = LoadChannel(channelID);
 
     if (!p_channelID)
     {
@@ -282,7 +286,13 @@ bool Mediator::Serve(const std::string& channelID)
     auto& channel = m_channels[p_channelID];
     if (channel && CanBeHandled(channel->get_State()))
     {
-        channel->Subscribe();
+        m_actionsQueue.emplace_back([this, p_channelID] () {
+            auto& channel = m_channels[p_channelID];
+            if (channel)
+                channel->Subscribe();
+            else
+                LOG_ERROR() << "Unknown channel ID:  " << to_hex(p_channelID->m_pData, p_channelID->nBytes);
+        });
         return true;
     }
 
@@ -294,16 +304,24 @@ void Mediator::OpenChannel(Amount aMy,
                            Amount aTrg,
                            Amount fee,
                            const WalletID& receiverWalletID,
-                           Height locktime)
+                           Height hOpenTxDh)
 {
     if (!IsEnoughCoinsAvailable(aMy + fee))
     {
         LOG_ERROR() << "Your available amount less then required.";
         auto zeroID = std::make_shared<ChannelID>(Zero);
         for (auto observer : m_observers)
-        {
             observer->OnOpenFailed(zeroID);
-        }
+        return;
+    }
+
+    auto addresses = m_pWalletDB->getAddresses(true, true);
+    if (storage::isMyAddress(addresses, receiverWalletID))
+    {
+        LOG_ERROR() << "Can't open channel on same DB as receiver";
+        auto zeroID = std::make_shared<ChannelID>(Zero);
+        for (auto observer : m_observers)
+            observer->OnOpenFailed(zeroID);
         return;
     }
 
@@ -313,100 +331,83 @@ void Mediator::OpenChannel(Amount aMy,
             WalletAddress::ExpirationStatus::Never,
             false);        
 
+    auto params = m_Params;
+    params.m_Fee = fee;
     auto channel = std::make_unique<Channel>(
-        *this, myOutAddr, receiverWalletID,
-        fee, aMy, aTrg, locktime);
-    channel->Subscribe();
+        *this, myOutAddr, receiverWalletID, aMy, aTrg, params);
 
     auto chID = channel->get_chID();
     m_channels[chID] = std::move(channel);
     
-    m_actionsQueue.emplace_back([this, chID] () {
-        OpenInternal(chID);
+    m_actionsQueue.emplace_back([this, chID, hOpenTxDh] () {
+        OpenInternal(chID, hOpenTxDh);
     });
 }
 
 bool Mediator::Close(const std::string& channelID)
 {
-        auto p_channelID = RestoreChannel(channelID);
+    auto p_channelID = LoadChannel(channelID);
     if (!p_channelID)
-        {
-            LOG_DEBUG() << "Channel " << channelID << " restored with error";
+    {
+        LOG_ERROR() << "Channel " << channelID << " restored with error";
         return false;
-        }
+    }
 
-        auto& channel = m_channels[p_channelID];
-        if (!channel)
-        {
-            LOG_DEBUG() << "Channel " << channelID << " unexpected error";
+    auto& channel = m_channels[p_channelID];
+    if (!channel)
+    {
+        LOG_ERROR() << "Channel " << channelID << " unexpected error";
         return false;
-        }
+    }
 
-        channel->Subscribe();
-        m_actionsQueue.emplace_back([this, p_channelID] () {
-            CloseInternal(p_channelID);
-        });
-        
-        LOG_DEBUG() << "Closing channel: " << channelID << " is sceduled";
+    if (channel->get_State() != Lightning::Channel::State::Open)
+    {
+        LOG_ERROR() << "Previous action with channel: " << channelID
+                    << " is unfinished. Please, listen this channel till action complete.";
+        return false;
+    }
+
+    m_actionsQueue.emplace_back([this, p_channelID] () {
+        CloseInternal(p_channelID);
+    });
+    
+    LOG_DEBUG() << "Closing channel: " << channelID << " is sceduled";
     return true;
 }
 
 bool Mediator::GracefulClose(const std::string& channelID)
 {
-        auto p_channelID = RestoreChannel(channelID);
-        if (!p_channelID)
-        {
-            LOG_DEBUG() << "Channel " << channelID << " restored with error";
+    auto p_channelID = LoadChannel(channelID);
+    if (!p_channelID)
+    {
+        LOG_ERROR() << "Channel " << channelID << " restored with error";
         return false;
-        }
+    }
 
-        auto& channel = m_channels[p_channelID];
-        if (!channel)
-        {
-            LOG_DEBUG() << "Channel " << channelID << " unexpected error";
+    auto& channel = m_channels[p_channelID];
+    if (!channel)
+    {
+        LOG_ERROR() << "Channel " << channelID << " unexpected error";
         return false;
-        }
+    }
 
-        channel->Subscribe();
+    if (channel->get_State() != Lightning::Channel::State::Open)
+    {
+        LOG_ERROR() << "Previous action with channel: " << channelID
+                    << " is unfinished. Please, listen this channel till action complete.";
+        return false;
+    }
 
-        Block::SystemState::Full tip;
-        get_History().get_Tip(tip);
-
-        if (IsOutOfSync(tip.m_TimeStamp))
-        {
-            m_actionsQueue.emplace_back([this, &channel, p_channelID] () {
-                Block::SystemState::Full tip;
-                get_History().get_Tip(tip);
-
-            if (tip.m_Height <= channel->get_LockHeight())
-            {
-                if (channel->Transfer(0, true))
-                    for (auto observer : m_observers)
-                    {
-                        observer->OnClosed(p_channelID);
-                    }
-            }
-            else
-            {
-                CloseInternal(p_channelID);
-            }
-            });
-            LOG_DEBUG() << "Closing channel: " << channelID << " is sceduled";
-        }
-        else
-        {
-        if (tip.m_Height <= channel->get_LockHeight())
-        {
-            if (channel->Transfer(0, true))
-                for (auto observer : m_observers)
-                {
-                    observer->OnClosed(p_channelID);
-                }
-        }
-        else
-        {
-            CloseInternal(p_channelID);
-        }
+    if (!IsInSync())
+    {
+        m_actionsQueue.emplace_back([this, &channel] () {
+            GracefulCloseInternal(channel);
+        });
+        LOG_DEBUG() << "Closing channel: " << channelID << " is sceduled";
+    }
+    else
+    {
+        GracefulCloseInternal(channel);
     }
 
     return true;
@@ -414,33 +415,41 @@ bool Mediator::GracefulClose(const std::string& channelID)
 
 bool Mediator::Delete(const std::string& channelID)
 {
-        auto p_channelID = Channel::ChannelIdFromString(channelID);
-        if (!p_channelID)
-        {
-            LOG_ERROR() << "Incorrect channel ID format: " << channelID;
-        return false;
-        }
-
-        TLaserChannelEntity chDBEntity;
-    if (!m_pWalletDB->getLaserChannel(p_channelID, &chDBEntity))
+    auto p_channelID = Channel::ChannelIdFromString(channelID);
+    if (!p_channelID)
     {
-        LOG_ERROR() << "Not found channel with ID: " << channelID;
+        LOG_ERROR() << "Incorrect channel ID format: " << channelID;
         return false;
     }
+    auto channel = LoadChannelInternal(p_channelID);
+    if (!p_channelID) return false;
 
-    if (!CanBeDeleted(std::get<LaserFields::LASER_STATE>(chDBEntity)))
-        {
+    auto state = channel->get_State();
+    if (!CanBeDeleted(state))
+    {
         LOG_ERROR() << "Channel: " << channelID << " in active state now";
         return false;
     }
 
-            if (m_pWalletDB->removeLaserChannel(p_channelID))
-            {
-                LOG_INFO() << "Channel: " << channelID << " deleted";
-        return true;
-            }
+    if (state == Lightning::Channel::State::Closed && !channel->IsSafeToForget())
+    {
+        LOG_ERROR() << "Channel: " << channelID << " can be rolled back";
+        return false;
+    }
 
-                LOG_INFO() << "Channel: " << channelID << " not deleted";
+    if (state == Lightning::Channel::State::OpenFailed)
+    {
+        channel->Forget();
+    }
+
+    m_channels.erase(p_channelID);
+    if (m_pWalletDB->removeLaserChannel(p_channelID))
+    {
+        LOG_INFO() << "Channel: " << channelID << " deleted";
+        return true;
+    }
+
+    LOG_INFO() << "Channel: " << channelID << " not deleted";
     return false;
 }
 
@@ -451,7 +460,7 @@ size_t Mediator::getChannelsCount() const
             m_channels.end(),
             [] (const auto& it) {
         const auto& ch = it.second;
-        return CanBeLoaded(ch->get_State());
+        return CanBeHandled(ch->get_State());
     });
 }
 
@@ -475,7 +484,7 @@ void Mediator::RemoveObserver(Observer* observer)
 
 bool Mediator::Transfer(Amount amount, const std::string& channelID)
 {
-    auto p_channelID = RestoreChannel(channelID);
+    auto p_channelID = LoadChannel(channelID);
     if (!p_channelID) 
     {
         LOG_ERROR() << "Channel " << channelID << " restored with error";
@@ -494,14 +503,9 @@ bool Mediator::Transfer(Amount amount, const std::string& channelID)
         return false;
     }
 
-    if (channel && channel->get_State() ==
-        beam::Lightning::Channel::State::Open)
+    if (channel && channel->get_State() == Lightning::Channel::State::Open)
     {
-        channel->Subscribe();
-
-        Block::SystemState::Full tip;
-        get_History().get_Tip(tip);
-        if (IsOutOfSync(tip.m_TimeStamp))
+        if (!IsInSync())
         {
             m_actionsQueue.emplace_back([this, amount, p_channelID] () {
                 TransferInternal(amount, p_channelID);
@@ -518,8 +522,13 @@ bool Mediator::Transfer(Amount amount, const std::string& channelID)
 
         return true;
     }
+    else if (channel && channel->get_State() == Lightning::Channel::State::Updating)
+    {
+        LOG_ERROR() << "Previous transfer for channel: " << channelID << " is not completed.";
+        return false;
+    }
 
-    LOG_ERROR() << "Channel " << channelID << " is not OPEN";
+    LOG_ERROR() << "Channel " << channelID << " is not OPEN.";
     return false;
 }
 
@@ -536,103 +545,113 @@ bool Mediator::get_skBbs(ECC::Scalar::Native& sk, const ChannelIDPtr& chID)
     return wid.m_Pk == peerID;
 }
 
-void Mediator::OnIncoming(const ChannelIDPtr& chID,
+bool Mediator::OnIncoming(const ChannelIDPtr& channelID,
                           Negotiator::Storage::Map& dataIn)
 {
     WalletID trgWid;
     if (!dataIn.Get(trgWid, Channel::Codes::MyWid))
-        return;
+        return false;
 
     Amount fee;
-    if (!dataIn.Get(fee, beam::Lightning::Codes::Fee))
-        return;
-    if (fee != m_feeAllowed)
+    if (!dataIn.Get(fee, Lightning::Codes::Fee) || fee != m_feeAllowed)
     {
-        LOG_ERROR() << "Incoming with incorrect FEE detected";
-        return;
+        LOG_ERROR() << "Incoming connection with incorrect 'laser_fee' detected";
+        return false;
     }
 
     Amount aMy;
-    if (!dataIn.Get(aMy, beam::Lightning::Codes::ValueYours))
-        return;
-    if (aMy != m_myInAllowed)
+    if (!dataIn.Get(aMy, Lightning::Codes::ValueYours) || aMy != m_myInAllowed)
     {
-        LOG_ERROR() << "Incoming with incorrect 'laser_my_locked_amount' AMOUNT detected";
-        return;
+        LOG_ERROR() << "Incoming connection with incorrect 'laser_my_locked_amount' detected";
+        return false;
     }
     
     Amount aTrg;
-    if (!dataIn.Get(aTrg, beam::Lightning::Codes::ValueMy))
-        return;
-    if (aTrg != m_trgInAllowed)
+    if (!dataIn.Get(aTrg, Lightning::Codes::ValueMy) || aTrg != m_trgInAllowed)
     {
-        LOG_ERROR() << "Incoming with incorrect 'laser_remote_locked_amount' AMOUNT detected";
-        return;
+        LOG_ERROR() << "Incoming connection with incorrect 'laser_remote_locked_amount' detected";
+        return false;
     }
 
     Height locktime;
-    if (!dataIn.Get(locktime, beam::Lightning::Codes::HLock))
-        return; 
-    if (locktime != m_locktimeAllowed)
+    if (!dataIn.Get(locktime, Lightning::Codes::HLock) || locktime != m_Params.m_hLockTime)
     {
-        LOG_ERROR() << "Incoming with incorrect LOCKTIME detected";
-        return;
+        LOG_ERROR() << "Incoming connection with incorrect 'HLock' detected";
+        return false;
     }          
 
     Unsubscribe();
 
+    LOG_INFO() << "Create channel by incoming connection: "
+               << to_hex(channelID->m_pData , channelID->nBytes);
+
+    auto params = m_Params;
+    params.m_Fee = fee;
     auto channel = std::make_unique<Channel>(
-        *this, chID, m_myInAddr, trgWid, fee, aMy, aTrg, locktime);
+        *this, channelID, m_myInAddr, trgWid, aMy, aTrg, params);
     channel->Subscribe();
     m_channels[channel->get_chID()] = std::move(channel);
 
     m_pInputReceiver.reset();
+    return true;
 }
 
-void Mediator::OpenInternal(const ChannelIDPtr& chID)
+void Mediator::OpenInternal(const ChannelIDPtr& chID, Height hOpenTxDh)
 {
-    Block::SystemState::Full tip;
-    get_History().get_Tip(tip);
+    auto& channel = m_channels[chID];
+    if (!channel)
+    {
+        LOG_ERROR() << "Unknown channel ID:  " << to_hex(chID->m_pData, chID->nBytes);
+        return;
+    }
 
-    HeightRange openWindow;
-    openWindow.m_Min = tip.m_Height;
-    openWindow.m_Max = openWindow.m_Min + kDefaultTxLifetime;
-
-    auto& ch = m_channels[chID];
-    if (ch && ch->Open(openWindow))
+    channel->Subscribe();
+    if (channel->Open(hOpenTxDh))
     {
         LOG_INFO() << "Opening channel: "
                    << to_hex(chID->m_pData, chID->nBytes);
+        UpdateChannelExterior(channel);
         return;
     }
 
     LOG_ERROR() << "Opening channel "
                 << to_hex(chID->m_pData, chID->nBytes) << " fail";
-    m_readyForForgetChannels.push_back(chID);
+
+    channel->Unsubscribe();
+    channel->Forget();
+    m_channels.erase(chID);
+
+    for (auto observer : m_observers)
+        observer->OnOpenFailed(chID);
 }
 
 void Mediator::TransferInternal(Amount amount, const ChannelIDPtr& chID)
 {
-    auto& ch = m_channels[chID];
+    Lock lock(m_mutex);
+
+    auto& channel = m_channels[chID];
     std::string channelIdStr = to_hex(chID->m_pData, chID->nBytes);
 
-    if (!ch)
+    if (!channel)
     {
         LOG_ERROR() << "Channel: " << channelIdStr << " not found";
         return;
     }
 
+    channel->Subscribe();
+
     Block::SystemState::Full tip;
     get_History().get_Tip(tip);
-    Height channelLockHeight = ch->get_LockHeight();
+    Height channelLockHeight = channel->get_LockHeight();
 
     if (tip.m_Height + 1 < channelLockHeight)
     {
-        if (ch->Transfer(amount))
+        if (channel->Transfer(amount))
         {
             LOG_INFO() << "Transfer: " << PrintableAmount(amount, true)
                     << " to channel: " << channelIdStr
                     << " started";
+            UpdateChannelExterior(channel);
             return;
         }
         else
@@ -658,55 +677,68 @@ void Mediator::TransferInternal(Amount amount, const ChannelIDPtr& chID)
     }
 }
 
+void Mediator::GracefulCloseInternal(const std::unique_ptr<Channel>& channel)
+{
+    Block::SystemState::Full tip;
+    get_History().get_Tip(tip);
+
+    if (tip.m_Height < channel->get_LockHeight())
+    {
+        if (!channel->Transfer(0, true))
+        {
+            auto& p_channelID = channel->get_chID();
+            for (auto observer : m_observers)
+                observer->OnCloseFailed(p_channelID);
+        }
+        channel->Subscribe();
+    }
+    else
+    {
+        CloseInternal(channel->get_chID());
+    }
+}
+
 void Mediator::CloseInternal(const ChannelIDPtr& chID)
 {
-    auto& ch = m_channels[chID];
-    if (ch && CanBeClosed(ch->get_State()))
+    auto& channel = m_channels[chID];
+    if (channel && CanBeClosed(channel->get_State()))
     {
-        ch->Close();
-        ch->LogNewState();
-        if (ch->TransformLastState())
-        {
-            m_pWalletDB->saveLaserChannel(*ch);
-        }
+        channel->Close();
+        UpdateChannelExterior(channel);
+        channel->Subscribe();
         return;
     }
-    LOG_ERROR() << "Can't close channel: "
-                << to_hex(chID->m_pData, chID->nBytes);
+    LOG_ERROR() << "Can't close channel: " << to_hex(chID->m_pData, chID->nBytes);
     for (auto observer : m_observers)
     {
         observer->OnCloseFailed(chID);
     }
 }
 
-void Mediator::ForgetChannel(const ChannelIDPtr& chID)
+void Mediator::ClosingCompleted(const ChannelIDPtr& p_channelID)
 {
-    auto it = m_channels.find(chID);
-    if (it != m_channels.end())
-    {
-        auto& ch = it->second;
-        auto state = ch->get_State();
-        ch->Forget();
-        if (state == Lightning::Channel::State::OpenFailed ||
-            state == Lightning::Channel::State::None)
-        {
-            for (auto observer : m_observers)
-            {
-                observer->OnOpenFailed(chID);
-            }
-        }
-        if (state == Lightning::Channel::State::Closed)
-        {
-            for (auto observer : m_observers)
-            {
-                observer->OnClosed(chID);
-            }
-        }
-        m_channels.erase(it);
-    }
+    auto it = m_channels.find(p_channelID);
+    if (it == m_channels.end()) return;
+
+    LOG_INFO() << "ClosingCompleted: "
+               << to_hex(p_channelID->m_pData, p_channelID->nBytes);
+    m_closedChannels.push_back(std::move(it->second));
+    m_channels.erase(it);
+    for (auto observer : m_observers)
+        observer->OnClosed(p_channelID);
 }
 
-ChannelIDPtr Mediator::RestoreChannel(const std::string& channelID)
+void Mediator::HandleOpenedWithFailChannel(const ChannelIDPtr& p_channelID)
+{
+    auto it = m_channels.find(p_channelID);
+    if (it == m_channels.end()) return;
+
+    m_channels.erase(it);
+    for (auto observer : m_observers)
+        observer->OnOpenFailed(p_channelID);
+}
+
+ChannelIDPtr Mediator::LoadChannel(const std::string& channelID)
 {
     auto p_channelID = Channel::ChannelIdFromString(channelID);
     if (!p_channelID)
@@ -715,61 +747,56 @@ ChannelIDPtr Mediator::RestoreChannel(const std::string& channelID)
         return nullptr;
     }
 
-    bool isConnected = false;
     for (const auto& it : m_channels)
     {
-        isConnected = *(it.first) == *p_channelID;
-        if (isConnected)
+        if (*(it.first) == *p_channelID)
         {
-            p_channelID = it.first;
-            LOG_DEBUG() << "Channel " << channelID << " already connected";
-            break;
+            LOG_DEBUG() << "Channel " << channelID << " loaded previously";
+            return it.first;
         }
     }
 
-    if (!isConnected)
-    {
-        if (!RestoreChannelInternal(p_channelID))
-        {
-            return nullptr;
-        }
-    }
+    if (!LoadAndStoreChannelInternal(p_channelID)) return nullptr;
 
     return p_channelID;
 }
 
-bool Mediator::RestoreChannelInternal(const ChannelIDPtr& p_channelID)
+std::unique_ptr<Channel> Mediator::LoadChannelInternal(
+    const ChannelIDPtr& p_channelID)
 {
     TLaserChannelEntity chDBEntity;
-    if (m_pWalletDB->getLaserChannel(p_channelID, &chDBEntity) &&
-        *p_channelID == std::get<LaserFields::LASER_CH_ID>(chDBEntity))
+    if (!m_pWalletDB->getLaserChannel(p_channelID, &chDBEntity))
     {
-        auto& myWID = std::get<LaserFields::LASER_MY_WID>(chDBEntity);
-        auto myAddr = m_pWalletDB->getAddress(myWID, true);
-        if (!myAddr) {
-            LOG_ERROR() << "Can't load address from DB: "
-                        << std::to_string(myWID);
-            return false;
-        }
-
-        auto state = std::get<LaserFields::LASER_STATE>(chDBEntity);
-        if (CanBeLoaded(state))
-        {
-            m_channels[p_channelID] = std::make_unique<Channel>(
-                *this, p_channelID, *myAddr, chDBEntity);
-            return true;
-        }
-        else
-        {
-            LOG_DEBUG() << "Channel "
-                        << to_hex(p_channelID->m_pData , p_channelID->nBytes)
-                        << " was closed or opened with failure";
-            return false;
-        }
+        LOG_INFO() << "Channel "
+                   << to_hex(p_channelID->m_pData , p_channelID->nBytes)
+                   << " not saved in DB";
+        return nullptr;
     }
-    LOG_INFO() << "Channel "
-               << to_hex(p_channelID->m_pData , p_channelID->nBytes)
-               << " not saved in DB";
+
+    auto& myWID = std::get<LaserFields::LASER_MY_WID>(chDBEntity);
+    auto myAddr = m_pWalletDB->getAddress(myWID, true);
+    if (!myAddr)
+    {
+        LOG_ERROR() << "Can't load address from DB: "
+                    << std::to_string(myWID);
+        return nullptr;
+    }
+
+    return std::make_unique<Channel>(*this, p_channelID, *myAddr, chDBEntity, m_Params);
+}
+
+bool Mediator::LoadAndStoreChannelInternal(const ChannelIDPtr& p_channelID)
+{
+    auto channel = LoadChannelInternal(p_channelID);
+    if (channel && CanBeHandled(channel->get_State()))
+    {
+        m_channels[p_channelID] = std::move(channel);
+        return true;
+    }
+
+    LOG_DEBUG() << "Channel "
+                << to_hex(p_channelID->m_pData , p_channelID->nBytes)
+                << " has inactive state or loaded with failure";
     return false;
 }
 
@@ -777,66 +804,98 @@ void Mediator::UpdateChannels()
 {
     for (auto& it: m_channels)
     {
-        auto& ch = it.second;
-        auto state = ch->get_State();
-        if (state == beam::Lightning::Channel::State::None) continue;
-        if (state == beam::Lightning::Channel::State::Closed)
+        auto& channel = it.second;
+        auto state = channel->get_State();
+
+        bool revisionDiscarded = false;
+        if (state == Lightning::Channel::State::Updating && channel->IsUpdateStuck())
         {
-            ch->LogNewState();
-            PrepareToForget(ch);
-            if (!ch->IsNegotiating() && ch->IsSafeToForget(kMaxRolbackHeight))
-            {
-                m_readyForForgetChannels.push_back(ch->get_chID());
-            }
-            continue;
-        }
-        if (state == Lightning::Channel::State::OpenFailed)
-        {
-            ch->LogNewState();
-            m_readyForForgetChannels.push_back(ch->get_chID());
-            continue;
+            LOG_DEBUG() << "Update stuck, discarding last revision...";
+            channel->DiscardLastRevision();
+            revisionDiscarded = true;
         }
 
-        ch->Update();
-        ch->LogNewState();
-        UpdateChannelExterior(ch);
+        bool closingDiscarded = false;
+        if (state == Lightning::Channel::State::Closing1 && channel->IsGracefulCloseStuck())
+        {
+            LOG_DEBUG() << "Closing stuck, discarding last revision...";
+            channel->DiscardLastRevision();
+            closingDiscarded = true;
+        }
+
+        if (state != Lightning::Channel::State::None &&
+            state != Lightning::Channel::State::Closed &&
+            state != Lightning::Channel::State::OpenFailed)
+        {
+            channel->Update();
+        }
+
+        UpdateChannelExterior(channel);
+
+        if (revisionDiscarded)
+            for (auto observer : m_observers)
+                observer->OnTransferFailed(channel->get_chID());
+
+        if (closingDiscarded)
+            for (auto observer : m_observers)
+                observer->OnCloseFailed(channel->get_chID());
+
     }
 }
 
 void Mediator::UpdateChannelExterior(const std::unique_ptr<Channel>& channel)
 {
     auto lastState = channel->get_LastState();
+    if (!channel->TransformLastState()) return;
+
+    channel->LogState();
     auto state = channel->get_State();
-    if (channel->TransformLastState() &&
-        state >= Lightning::Channel::State::Opening1)
+    if (state == Lightning::Channel::State::None) return;
+    
+    channel->UpdateRestorePoint();
+    m_pWalletDB->saveLaserChannel(*channel);
+
+    if (state == Lightning::Channel::State::Open)
     {
-        channel->UpdateRestorePoint();
-        m_pWalletDB->saveLaserChannel(*channel);
-        
-        if (lastState != Lightning::Channel::State::Updating &&
-            state == Lightning::Channel::State::Open)
+        if (lastState <= Lightning::Channel::State::Opening2 &&
+            lastState != Lightning::Channel::State::None)
         {
+            LOG_DEBUG() << "observer->OnOpened";
             for (auto observer : m_observers)
-            {
                 observer->OnOpened(channel->get_chID());
-            }
         }
-        if (lastState == Lightning::Channel::State::Open &&
-            state == Lightning::Channel::State::Updating)
+        else if (lastState == Lightning::Channel::State::Updating)
         {
+            LOG_DEBUG() << "observer->OnUpdateFinished";
             for (auto observer : m_observers)
-            {
-                observer->OnUpdateStarted(channel->get_chID());
-            }
-        }
-        if (lastState == Lightning::Channel::State::Updating &&
-            state == Lightning::Channel::State::Open)
-        {
-            for (auto observer : m_observers)
-            {
                 observer->OnUpdateFinished(channel->get_chID());
-            }
         }
+    }
+    else if (state == Lightning::Channel::State::Updating)
+    {
+        if (lastState == Lightning::Channel::State::Open)
+        {
+            LOG_DEBUG() << "observer->OnUpdateStarted";
+            for (auto observer : m_observers)
+                observer->OnUpdateStarted(channel->get_chID());
+        }
+    }
+    else if (state == Lightning::Channel::State::Closed)
+    {
+        if (lastState != Lightning::Channel::State::Closed)
+            channel->Unsubscribe();
+
+        if (!channel->IsNegotiating() && channel->IsSafeToClose())
+            m_readyForCloseChannels.push_back(channel->get_chID());
+    }
+    else if (state == Lightning::Channel::State::OpenFailed &&
+             lastState != Lightning::Channel::State::OpenFailed)
+    {
+        channel->Unsubscribe();
+        channel->Forget();
+
+        auto channelID = channel->get_chID();
+        m_openedWithFailChannels.push_back(channelID);
     }
 }
 
@@ -844,33 +903,14 @@ bool Mediator::ValidateTip()
 {
     Block::SystemState::Full tip;
     get_History().get_Tip(tip);
-    if (!IsValidTimeStamp(tip.m_TimeStamp))
-    {
-        LOG_ERROR() << "Tip timestamp not valid.";
+    if (!IsValidTimeStamp(tip.m_TimeStamp, kDefaultLaserTolerance) || !tip.m_Height)
         return false;
-    }
-
-    if (!tip.m_Height)
-    {
-        LOG_ERROR() << "Tip height is Zero.";
-        return false;
-    }
 
     Block::SystemState::ID id;
     tip.get_ID(id);
     m_pWalletDB->setSystemStateID(id);
     LOG_INFO() << "LASER Current state is " << id;
     return true;
-}
-
-void Mediator::PrepareToForget(const std::unique_ptr<Channel>& channel)
-{
-    if (channel->TransformLastState())
-    {
-        channel->Unsubscribe();
-        channel->UpdateRestorePoint();
-        m_pWalletDB->saveLaserChannel(*channel);
-    }
 }
 
 bool Mediator::IsEnoughCoinsAvailable(Amount required)
@@ -895,6 +935,14 @@ void Mediator::Unsubscribe()
     m_myInAddr.m_walletID.m_Channel.Export(ch);
     m_pConnection->BbsSubscribe(ch, 0, nullptr);
     LOG_DEBUG() << "LASER WAIT IN unsubscribed: " << ch;
+}
+
+bool Mediator::IsInSync()
+{
+    Block::SystemState::Full tip;
+    get_History().get_Tip(tip);
+
+    return IsValidTimeStamp(tip.m_TimeStamp, kDefaultLaserTolerance);
 }
 
 }  // namespace beam::wallet::laser

@@ -36,14 +36,13 @@ namespace beam::wallet
         Amount GetAmountBeam() const;
         const AmountList& GetAmountList() const;
         void AddChange();
-        void SelectInputs();
+        void SelectInputCoins();
         bool GetInputs();
         bool GetOutputs();
         void GenerateBeamCoin(Amount amount, bool change);
-        bool CreateInputs();
-        bool CreateOutputs();
+        void CreateInputs();
+        void CreateOutputs();
 
-        Key::Index GetAssetOwnerIdx() const;
         PeerID GetAssetOwnerId() const;
 
         //
@@ -51,23 +50,17 @@ namespace beam::wallet
         //
         const Merkle::Hash& GetKernelID() const;
         bool LoadKernel();
-        bool MakeKernel();
+        void MakeKernel();
 
         std::string GetKernelIDString() const;
         Height GetMinHeight() const;
-
-    protected:
-
-    private:
-        const CoinIDList& GetInputCoins() const;
-        const CoinIDList& GetOutputCoins() const;
 
     private:
         BaseTransaction& m_Tx;
         SubTxID m_SubTxID;
 
-        beam::Key::Index m_assetOwnerIdx;
         PeerID m_assetOwnerId;
+        std::string m_Metadata;
 
         Amount     m_Fee;
         Amount     m_ChangeBeam;

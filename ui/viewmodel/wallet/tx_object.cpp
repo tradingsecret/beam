@@ -80,15 +80,20 @@ namespace
     }
 }
 
-TxObject::TxObject(QObject* parent)
-        : QObject(parent)
+
+TxObject::TxObject( const TxDescription& tx,
+                    QObject* parent/* = nullptr*/)
+        : TxObject(tx, beam::wallet::ExchangeRate::Currency::Unknown, parent)
 {
 }
 
-TxObject::TxObject(const TxDescription& tx, QObject* parent/* = nullptr*/)
+TxObject::TxObject( const TxDescription& tx,
+                    beam::wallet::ExchangeRate::Currency secondCurrency,
+                    QObject* parent/* = nullptr*/)
         : QObject(parent)
         , m_tx(tx)
         , m_type(*m_tx.GetParameter<TxType>(TxParameterID::TransactionType))
+        , m_secondCurrency(secondCurrency)
 {
     auto kernelID = QString::fromStdString(to_hex(m_tx.m_kernelID.m_pData, m_tx.m_kernelID.nBytes));
     setKernelID(kernelID);
@@ -133,6 +138,29 @@ QString TxObject::getAmount() const
 beam::Amount TxObject::getAmountValue() const
 {
     return m_tx.m_amount;
+}
+
+QString TxObject::getSecondCurrencyRate() const
+{
+    auto exchangeRatesOptional = getTxDescription().GetParameter<std::vector<ExchangeRate>>(TxParameterID::ExchangeRates);
+
+    if (exchangeRatesOptional)
+    {
+        std::vector<ExchangeRate>& rates = *exchangeRatesOptional;
+        auto secondCurrency = m_secondCurrency;
+        auto search = std::find_if(std::begin(rates),
+                                   std::end(rates),
+                                   [secondCurrency](const ExchangeRate& r)
+                                   {
+                                       return r.m_currency == ExchangeRate::Currency::Beam
+                                           && r.m_unit == secondCurrency;
+                                   });
+        if (search != std::cend(rates))
+        {
+            return AmountToUIString(search->m_rate);
+        }
+    }
+    return "0";
 }
 
 QString TxObject::getStatus() const
@@ -204,7 +232,7 @@ QString TxObject::getTransactionID() const
 
 QString TxObject::getReasonString(beam::wallet::TxFailureReason reason) const
 {
-    static const std::array<QString,34> reasons = {
+    static const std::vector<QString> reasons = {
         //% "Unexpected reason, please send wallet logs to Beam support"
         qtTrId("tx-failure-undefined"),
         //% "Transaction cancelled"
@@ -253,6 +281,8 @@ QString TxObject::getReasonString(beam::wallet::TxFailureReason reason) const
         qtTrId("tx-failure-create-multisig"),
         //% "Fee is too small"
         qtTrId("tx-failure-fee-too-small"),
+        //% "Fee is too large"
+        qtTrId("tx-failure-fee-too-large"),
         //% "Kernel's min height is unacceptable"
         qtTrId("tx-failure-kernel-min-height"),
         //% "Not a loopback transaction"
@@ -261,9 +291,21 @@ QString TxObject::getReasonString(beam::wallet::TxFailureReason reason) const
         qtTrId("tx-failure-key-keeper-no-initialized"),
         //% "No valid asset owner id/asset owner idx"
         qtTrId("tx-failure-invalid-asset-id"),
-        //%"Asset registration fee is too small"
+        //% "No asset info or asset info is not valid"
+        qtTrId("tx-failure-asset-invalid-info"),
+        //% "No asset metadata or asset metadata is not valid"
+        qtTrId("tx-failure-asset-invalid-metadata"),
+        //% "Invalid asset id"
+        qtTrId("tx-failure-asset-invalid-id"),
+        //% "Failed to receive asset confirmation"
+        qtTrId("tx-failure-asset-confirmation"),
+        //% "Asset is still in use (issued amount > 0)"
+        qtTrId("tx-failure-asset-in-use"),
+        //% "Asset is still locked"
+        qtTrId("tx-failure-asset-locked"),
+        //% "Asset registration fee is too small"
         qtTrId("tx-failure-asset-small-fee"),
-        //% "Cannot consume more than MAX_INT64 asset groth in one transaction"
+        //% "Cannot issue/consume more than MAX_INT64 asset groth in one transaction"
         qtTrId("tx-failure-invalid-asset-amount"),
         //% "Some mandatory data for payment proof is missing"
         qtTrId("tx-failure-invalid-data-for-payment-proof"),
@@ -330,6 +372,22 @@ QString TxObject::getStateDetails() const
         }
     }
     return "";
+}
+
+QString TxObject::getToken() const
+{
+    const auto& tx = getTxDescription();
+    return QString::fromStdString(tx.getToken());
+}
+
+QString TxObject::getSenderIdentity() const
+{
+    return QString::fromStdString(m_tx.getSenderIdentity());
+}
+
+QString TxObject::getReceiverIdentity() const
+{
+    return QString::fromStdString(m_tx.getReceiverIdentity());
 }
 
 bool TxObject::hasPaymentProof() const

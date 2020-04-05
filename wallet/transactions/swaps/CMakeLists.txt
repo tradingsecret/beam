@@ -5,7 +5,6 @@ set(SWAP_SRC
     swap_transaction.cpp
     lock_tx_builder.cpp
     shared_tx_builder.cpp
-    swap_offers_board.cpp
     utils.cpp
     bridges/bitcoin/client.cpp
     bridges/bitcoin/common.cpp
@@ -26,6 +25,7 @@ set(SWAP_SRC
 
 add_library(swap STATIC ${SWAP_SRC})
 target_link_libraries(swap PUBLIC wallet libbitcoin PRIVATE http)
+target_compile_definitions(swap PUBLIC BEAM_ATOMIC_SWAP_SUPPORT)
 target_include_directories(swap PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 
 

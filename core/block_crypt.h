@@ -25,7 +25,16 @@ namespace beam
 
 	const Height MaxHeight = std::numeric_limits<Height>::max();
 
-	typedef ECC::Hash::Value PeerID;
+	struct PeerID :public ECC::uintBig
+	{
+		using ECC::uintBig::uintBig;
+		using ECC::uintBig::operator =;
+
+		bool ExportNnz(ECC::Point::Native&) const;
+		bool Import(const ECC::Point::Native&); // returns if the sign is preserved
+		void FromSk(ECC::Scalar::Native&); // will negate the scalar iff necessary
+	};
+
 	typedef uint64_t BbsChannel;
 	typedef ECC::Hash::Value BbsMsgID;
 	typedef uint64_t TxoID;
@@ -99,28 +108,43 @@ namespace beam
 	struct Asset
 	{
 		typedef uint32_t ID; // 1-based asset index. 0 is reserved for default asset (Beam)
-		static const ID s_MaxCount = uint32_t(1) << 30; // 1 billion. Of course practically it'll be very much smaller
+		static const ID s_MaxCount  = uint32_t(1) << 30; // 1 billion. Of course practically it'll be very much smaller
+		static const ID s_InvalidID = 0;
+		static const PeerID s_InvalidOwnerID;
 
 		struct Base
 		{
 			ID m_ID;
 
-			Base(ID id = 0) :m_ID(id) {}
+			explicit Base(ID id = s_InvalidID) :m_ID(id) {}
 
 			void get_Generator(ECC::Point::Native&) const;
 			void get_Generator(ECC::Point::Storage&) const;
 			void get_Generator(ECC::Point::Native&, ECC::Point::Storage&) const;
 		};
 
+		struct Metadata
+		{
+			ByteBuffer m_Value;
+			ECC::Hash::Value m_Hash; // not serialized
+
+			void Reset();
+			void UpdateHash(); // called automatically during deserialization
+			void get_Owner(PeerID&, Key::IPKdf&) const;
+		};
+
 		struct Info
 		{
 			AmountBig::Type m_Value;
-			PeerID m_Owner;
-			Height m_LockHeight; // last emitted/burned change height. if emitted atm - when was latest 1st emission. If burned atm - what was last burn.
-			ByteBuffer m_Metadata;
+			PeerID m_Owner = Zero;
+			Height m_LockHeight = 0; // last emitted/burned change height. if emitted atm - when was latest 1st emission. If burned atm - what was last burn.
+			Metadata m_Metadata;
 			static const uint32_t s_MetadataMaxSize = 1024 * 16; // 16K
 
 			void Reset();
+			bool IsEmpty() const;
+			bool IsValid() const;
+			bool Recognize(Key::IPKdf&) const;
 		};
 
 		struct Full
@@ -140,8 +164,8 @@ namespace beam
 
 			bool IsValid(ECC::Point::Native& hGen) const; // for testing only, in real-world cases batch verification should be used!
 			bool IsValid(ECC::Point::Native& hGen, ECC::InnerProduct::BatchContext& bc, ECC::Scalar::Native* pKs) const;
-			void Create(ECC::Point::Native& genBlinded, ECC::Scalar::Native& skInOut, Amount val, Asset::ID, const ECC::Point::Native& gen);
-			void Create(ECC::Point::Native& genBlinded, ECC::Scalar::Native& skInOut, Amount val, Asset::ID);
+			void Create(ECC::Point::Native& genBlinded, ECC::Scalar::Native& skInOut, Amount val, Asset::ID, const ECC::Point::Native& gen, const ECC::Hash::Value* phvSeed = nullptr);
+			void Create(ECC::Point::Native& genBlinded, ECC::Scalar::Native& skInOut, Amount val, Asset::ID, const ECC::Hash::Value* phvSeed = nullptr);
 			void Create(ECC::Point::Native& genBlinded, const ECC::Scalar::Native& skGen, Asset::ID, const ECC::Point::Native& gen);
 
 			static void ModifySk(ECC::Scalar::Native& skInOut, const ECC::Scalar::Native& skGen, Amount val);
@@ -178,7 +202,6 @@ namespace beam
 		private:
 			uint32_t SetBegin(Asset::ID, const ECC::Scalar::Native& skGen);
 			static const ECC::Point::Compact& get_H();
-			static void get_skGen(ECC::Scalar::Native& skGen, const ECC::Scalar::Native& sk, Amount val, Asset::ID aid);
 		};
 	};
 	struct Rules
@@ -265,6 +288,7 @@ namespace beam
 		const HeightHash& get_LastFork() const;
 		const HeightHash* FindFork(const Merkle::Hash&) const;
 		size_t FindFork(Height) const;
+		Height get_ForkMaxHeightSafe(size_t iFork) const;
 		std::string get_SignatureStr() const;
 
 	private:
@@ -471,7 +495,16 @@ namespace beam
 		std::unique_ptr<ECC::RangeProof::Public>		m_pPublic;
 		Asset::Proof::Ptr								m_pAsset;
 
-		void Create(Height hScheme, ECC::Scalar::Native&, Key::IKdf& coinKdf, const CoinID&, Key::IPKdf& tagKdf, bool bPublic = false);
+		struct OpCode {
+			enum Enum {
+				Standard,
+				Public, // insist on public rangeproof, regardless to m_Coinbase. For tests only
+				Mpc_1, // ignore coinKdf, generate rangeproof without sk, up to T1/T2
+				Mpc_2, // Finish rangeproof after T1/T2 and TauX were updated by the peer
+			};
+		};
+
+		void Create(Height hScheme, ECC::Scalar::Native&, Key::IKdf& coinKdf, const CoinID&, Key::IPKdf& tagKdf, OpCode::Enum = OpCode::Standard);
 
 		bool Recover(Height hScheme, Key::IPKdf& tagKdf, CoinID&) const;
 		bool VerifyRecovered(Key::IPKdf& coinKdf, const CoinID&) const;
@@ -541,6 +574,7 @@ namespace beam
 		struct PublicGen;
 		struct Viewer;
 		struct Data;
+		struct DataParams; // just a fwd-declaration of Data::Params
 	};
 
 #define BeamKernelsAll(macro) \
@@ -574,6 +608,7 @@ namespace beam
 
 		struct Internal
 		{
+			bool m_HasNonStd = false; // is it or does it contain non-std kernels with side effects and mutual dependencies. Those should not be sorted!
 			Merkle::Hash m_ID; // unique kernel identifier in the system.
 		} m_Internal;
 
@@ -688,7 +723,8 @@ namespace beam
 		ECC::Point m_Commitment;	// aggregated, including nested kernels
 		ECC::SignatureGeneralized<1> m_Signature;
 
-		void Sign(const ECC::Scalar::Native& sk, const ECC::Scalar::Native& skAsset); // suitable for aux kernels, created by single party
+		void Sign_(const ECC::Scalar::Native& sk, const ECC::Scalar::Native& skAsset);
+		void Sign(const ECC::Scalar::Native& sk, Key::IKdf&, const Asset::Metadata&);
 
 		virtual bool IsValid(Height hScheme, ECC::Point::Native& exc, const TxKernel* pParent = nullptr) const override;
 	protected:
@@ -704,7 +740,7 @@ namespace beam
 
 		Asset::ID m_AssetID;
 		AmountSigned m_Value;
-		TxKernelAssetEmit() :m_Value(0) {}
+		TxKernelAssetEmit() : m_AssetID(Asset::s_InvalidID), m_Value(0) {}
 
 		virtual ~TxKernelAssetEmit() {}
 		virtual Subtype::Enum get_Subtype() const override;
@@ -719,7 +755,9 @@ namespace beam
 	{
 		typedef std::unique_ptr<TxKernelAssetCreate> Ptr;
 
-		ByteBuffer m_MetaData;
+		Asset::Metadata m_MetaData;
+
+		void Sign(const ECC::Scalar::Native& sk, Key::IKdf&);
 
 		virtual ~TxKernelAssetCreate() {}
 		virtual Subtype::Enum get_Subtype() const override;
@@ -735,6 +773,7 @@ namespace beam
 		typedef std::unique_ptr<TxKernelAssetDestroy> Ptr;
 
 		Asset::ID m_AssetID;
+        TxKernelAssetDestroy(): m_AssetID(Asset::s_InvalidID) {}
 
 		virtual ~TxKernelAssetDestroy() {}
 		virtual Subtype::Enum get_Subtype() const override;
@@ -1262,4 +1301,8 @@ namespace beam
 		void ZeroInit();
 		bool EnumStatesHeadingOnly(IStateWalker&) const; // skip arbitrary
 	};
+}
+
+inline ECC::Hash::Processor& operator << (ECC::Hash::Processor& hp, const beam::PeerID& pid) {
+	return hp << Cast::Down<ECC::Hash::Value>(pid);
 }

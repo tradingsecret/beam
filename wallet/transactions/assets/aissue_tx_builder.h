@@ -36,27 +36,27 @@ namespace beam::wallet
         // Coins, amounts & fees
         //
         Amount   GetFee() const;
-        Amount   GetAmountBeam() const;
+        Amount   GetTransactionAmount() const;
         Amount   GetAmountAsset() const;
         const    AmountList& GetAmountList() const;
         void     AddChange();
-        void     SelectInputs();
+        void     SelectInputCoins();
         bool     GetInputs();
         bool     GetOutputs();
         void     GenerateAssetCoin(Amount amount, bool change);
         void     GenerateBeamCoin(Amount amount, bool change);
-        bool     CreateInputs();
-        bool     CreateOutputs();
-        Key::Index GetAssetOwnerIdx() const;
+        void     CreateInputs();
+        void     CreateOutputs();
+
         Asset::ID  GetAssetId() const;
+        PeerID     GetAssetOwnerId() const;
 
         //
         // Blockchain stuff
         //
         const Merkle::Hash& GetKernelID() const;
         bool LoadKernel();
-        void CreateKernel();
-        void SignKernel();
+        void MakeKernel();
 
         std::string GetKernelIDString() const;
         Height GetMinHeight() const;
@@ -68,17 +68,16 @@ namespace beam::wallet
     private:
         BaseTransaction& m_Tx;
         SubTxID m_SubTxID;
+        PeerID  m_assetOwnerId;
 
-        beam::Asset::ID  m_assetId;
-        beam::Key::Index m_assetOwnerIdx;
-
-        bool       m_issue;
-        AmountList m_AmountList;
-        Amount     m_Fee;
-        Amount     m_ChangeBeam;
-        Amount     m_ChangeAsset;
-        Height     m_MinHeight;
-        Height     m_MaxHeight;
+        bool        m_issue;
+        std::string m_Metadata;
+        AmountList  m_AmountList;
+        Amount      m_Fee;
+        Amount      m_ChangeBeam;
+        Amount      m_ChangeAsset;
+        Height      m_MinHeight;
+        Height      m_MaxHeight;
 
         std::vector<Input::Ptr>  m_Inputs;
         std::vector<Output::Ptr> m_Outputs;

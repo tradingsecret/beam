@@ -15,66 +15,21 @@
 #pragma once
 
 #include "core/block_rw.h"
-#include "3rdparty/utilstrencodings.h"
 #include "wallet/core/private_key_keeper.h"
 
 namespace beam::wallet
 {
-    template <typename T>
-    std::string to_base64(const T& obj)
+    namespace JsonFields
     {
-        ByteBuffer buffer;
-        {
-            Serializer s;
-            s & obj;
-            s.swap_buf(buffer);
-        }
-
-        return EncodeBase64(buffer.data(), buffer.size());
-    }
-
-    template <>
-    std::string to_base64(const KernelParameters& obj)
-    {
-        ByteBuffer buffer;
-        {
-            Serializer s;
-            s& obj;
-            s.swap_buf(buffer);
-        }
-
-        return EncodeBase64(buffer.data(), buffer.size());
-    }
-
-    template <typename T>
-    T from_base64(const std::string& base64)
-    {
-        T obj;
-        {
-            auto data = DecodeBase64(base64.data());
-
-            Deserializer d;
-            d.reset(data.data(), data.size());
-
-            d & obj;
-        }
-
-        return obj;
-    }
-
-    template <>
-    KernelParameters from_base64(const std::string& base64)
-    {
-        KernelParameters obj;
-        {
-            auto data = DecodeBase64(base64.data());
-
-            Deserializer d;
-            d.reset(data.data(), data.size());
-
-            d& obj;
-        }
-
-        return obj;
+        inline const char* Status = "status";
+        inline const char* Count = "count";
+        inline const char* Result = "result";
+        inline const char* Offset = "offset";
+        inline const char* PaymentProofSig = "payment_proof_sig";
+        inline const char* UserAgreement = "agreement";
+        inline const char* Kernel = "kernel";
+        inline const char* PublicKdf = "pub_kdf";
+        inline const char* PublicNonce = "pub_nonce";
+        inline const char* Commitment = "commitment";
     }
 };
