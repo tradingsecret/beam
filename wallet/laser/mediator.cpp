@@ -45,7 +45,7 @@ inline bool CanBeDeleted(int state)
            state == beam::Lightning::Channel::State::Closed;
 }
 
-const beam::Timestamp kDefaultLaserTolerance = 60 * (beam::Lightning::kMaxBlackoutTime >> 1);
+const beam::Timestamp kDefaultLaserTolerance = 60 * (beam::Lightning::kMaxBlackoutTime - 1);
 }  // namespace
 
 namespace beam::wallet::laser
@@ -916,9 +916,8 @@ bool Mediator::ValidateTip()
 bool Mediator::IsEnoughCoinsAvailable(Amount required)
 {
     storage::Totals totalsCalc(*m_pWalletDB);
-    const auto& totals = totalsCalc.GetTotals(Zero);
-
-    return totals.Avail >= required; 
+    const auto& totals = totalsCalc.GetBeamTotals();
+    return AmountBig::get_Lo(totals.Avail) >= required;
 }
 
 void Mediator::Subscribe()

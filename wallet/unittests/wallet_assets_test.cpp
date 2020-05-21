@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include <boost/filesystem.hpp>
-#include "logger.h"
+#include "utility/logger.h"
 #include "keykeeper/local_private_key_keeper.h"
 #include "wallet/core/common.h"
 #include "wallet/core/wallet_network.h"
@@ -51,7 +51,7 @@ void TestAssets() {
     const auto walletDB = createSqliteWalletDB("sender_wallet.db", false, true);
     walletDB->AllocateKidRange(100500);
 
-    TestWalletRig sender("sender", walletDB, stopReactor);
+    TestWalletRig sender(walletDB, stopReactor);
     WALLET_CHECK(sender.m_WalletDB->getTxHistory().empty());
 
     WALLET_CHECK(node.GetHeight() > Rules::get().pForks[1].m_Height);
@@ -64,8 +64,8 @@ void TestAssets() {
 
     const auto checkTotals = [&] (Amount beam, Amount amountAsset) {
         storage::Totals allTotals(*walletDB);
-        WALLET_CHECK(allTotals.GetTotals(Zero).Avail == beam);
-        WALLET_CHECK(allTotals.GetTotals(assetId).Avail == amountAsset);
+        WALLET_CHECK(allTotals.GetBeamTotals().Avail == AmountBig::Type(beam));
+        WALLET_CHECK(allTotals.GetTotals(assetId).Avail == AmountBig::Type(amountAsset));
     };
 
     const auto makeCoin = [&walletDB](Amount amount) {
@@ -407,7 +407,7 @@ void TestAssets() {
 
     const auto receiverWalletDB = createSqliteWalletDB("receiver_wallet.db", false, true);
     receiverWalletDB->AllocateKidRange(100500);
-    TestWalletRig receiver("receiver", receiverWalletDB, stopReactor);
+    TestWalletRig receiver(receiverWalletDB, stopReactor);
     WALLET_CHECK(receiver.m_WalletDB->getTxHistory().empty());
     RegisterAssetCreators(receiver.m_Wallet);
 

@@ -761,16 +761,13 @@ void Node::Processor::Stop()
     }
 }
 
-Key::IPKdf* Node::Processor::get_ViewerKey()
+void Node::Processor::get_ViewerKeys(ViewerKeys& vk)
 {
-	return get_ParentObj().m_Keys.m_pOwner.get();
-}
+    vk.m_pMw = get_ParentObj().m_Keys.m_pOwner.get();
 
-const ShieldedTxo::Viewer* Node::Processor::get_ViewerShieldedKey()
-{
-	return get_ParentObj().m_Keys.m_pOwner ?
-		&get_ParentObj().m_Keys.m_ShieldedViewer :
-		nullptr;
+    vk.m_nSh = static_cast<Key::Index>(get_ParentObj().m_Keys.m_vSh.size());
+    if (vk.m_nSh)
+        vk.m_pSh = &get_ParentObj().m_Keys.m_vSh.front();
 }
 
 void Node::Processor::OnEvent(Height h, const proto::Event::Base& evt)
@@ -927,7 +924,10 @@ void Node::InitKeys()
 
 		}
 
-		m_Keys.m_ShieldedViewer.FromOwner(*m_Keys.m_pOwner);
+        m_Keys.m_vSh.resize(1); // Change this if/when we decide to use multiple keys
+
+        for (Key::Index nIdx = 0; nIdx < static_cast<Key::Index>(m_Keys.m_vSh.size()); nIdx++)
+    		m_Keys.m_vSh[nIdx].FromOwner(*m_Keys.m_pOwner, nIdx);
 	}
 	else
         m_Keys.m_pMiner = nullptr; // can't mine without owner view key, because it's used for Tagging
@@ -1077,7 +1077,7 @@ Node::~Node()
 
 	m_Processor.Stop();
 
-	if (!std::uncaught_exceptions())
+	if (!std::uncaught_exceptions() && m_Processor.get_DB().IsOpen())
 		m_PeerMan.OnFlush();
 
     LOG_INFO() << "Node stopped";
@@ -3061,7 +3061,7 @@ void Node::Peer::OnMsg(proto::GetShieldedList&& msg)
 	Processor& p = m_This.m_Processor;
 	if ((msg.m_Id0 < p.m_Extra.m_ShieldedOutputs) && msg.m_Count)
 	{
-        std::setmin(msg.m_Count, Rules::get().Shielded.NMax * 2); // no reason to ask for more
+        std::setmin(msg.m_Count, Rules::get().Shielded.m_ProofMax.get_N() * 2); // no reason to ask for more
 
 		TxoID n = p.m_Extra.m_ShieldedOutputs - msg.m_Id0;
 
@@ -4264,9 +4264,7 @@ bool Node::GenerateRecoveryInfo(const char* szPath)
 			// 2 ways to discover the UTXO create height: either directly by looking its TxoID in States table, or reverse-engineer it from Maturity
 			// Since currently maturity delta is independent of current height (not a function of height, not changed in current forks) - we prefer the 2nd method, which is faster.
 
-			//NodeDB::StateID sid;
-			//m_pDB->FindStateByTxoID(sid, id);
-			//val.m_CreateHeight = sid.m_Height;
+            //m_Processor.FindHeightByTxoID(val.m_CreateHeight, id);
 			//assert(val.m_Output.get_MinMaturity(val.m_CreateHeight) == d.m_Maturity);
 
 			Height hCreateHeight = d.m_Maturity - outp.get_MinMaturity(0);
@@ -4301,18 +4299,25 @@ bool Node::GenerateRecoveryInfo(const char* szPath)
 
                 virtual bool OnKrnEx(const TxKernelShieldedInput& krn) override
                 {
+                    uint8_t nFlags = 0;
+
                     m_Ser & m_Height;
-                    m_Ser & false;
+                    m_Ser & nFlags;
                     m_Ser & krn.m_SpendProof.m_SpendPk;
                     return true;
                 }
 
                 virtual bool OnKrnEx(const TxKernelShieldedOutput& krn) override
                 {
-                    Cast::NotConst(krn).m_Txo.m_pAsset.reset(); // not needed for recovery atm
+                    uint8_t nFlags = RecoveryInfo::Flags::Output;
+                    if (krn.m_Txo.m_pAsset)
+                    {
+                        Cast::NotConst(krn).m_Txo.m_pAsset.reset(); // not needed for recovery atm
+                        nFlags |= RecoveryInfo::Flags::HadAsset;
+                    }
 
                     m_Ser & m_Height;
-                    m_Ser & true;
+                    m_Ser & nFlags;
                     m_Ser & krn.m_Txo;
                     m_Ser & krn.m_Msg;
                     return true;

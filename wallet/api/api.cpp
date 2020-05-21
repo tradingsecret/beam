@@ -14,74 +14,216 @@
 
 #include "wallet/api/api.h"
 #include "wallet/core/common_utils.h"
+#include "wallet/core/common.h"
 #ifdef BEAM_ATOMIC_SWAP_SUPPORT
 #include "wallet/client/extensions/offers_board/swap_offer_token.h"
 #include "wallet/transactions/swaps/bridges/bitcoin/bitcoin_side.h"
 #include "wallet/transactions/swaps/bridges/litecoin/litecoin_side.h"
 #include "wallet/transactions/swaps/bridges/qtum/qtum_side.h"
 #include "wallet/transactions/swaps/utils.h"
+#include "wallet/transactions/swaps/swap_tx_description.h"
 #endif  // BEAM_ATOMIC_SWAP_SUPPORT
-
 #include <regex>
+
+namespace beam::wallet {
+    namespace {
+        // This is for jscript compatibility
+        // Number.MAX_SAFE_INTEGER
+        const auto MAX_ALLOWED_INT = AmountBig::Type(9'007'199'254'740'991U);
+    }
+}
 
 namespace beam::wallet
 {    
 namespace
 {
-    void GetStatusResponseJson(const TxDescription& tx,
-        json& msg,
-        Height kernelProofHeight,
-        Height systemHeight,
-        bool showIdentities = false)
+    
+#ifdef BEAM_ATOMIC_SWAP_SUPPORT
+void AddSwapTxDetailsToJson(const TxDescription& tx, json& msg)
+{
+    SwapTxDescription swapTx(tx);
+
+    msg["is_beam_side"] = swapTx.isBeamSide();
+    msg["swap_value"] = swapTx.getSwapAmount();
+
+    auto fee = swapTx.getFee();
+    if (fee)
     {
-        msg = json
-        {
-            {"txId", TxIDToString(tx.m_txId)},
-            {"status", tx.m_status},
-            {"status_string", tx.getStatusStringApi()},
-            {"sender", std::to_string(tx.m_sender ? tx.m_myId : tx.m_peerId)},
-            {"receiver", std::to_string(tx.m_sender ? tx.m_peerId : tx.m_myId)},
-            {"fee", tx.m_fee},
-            {"value", tx.m_amount},
-            {"comment", std::string{ tx.m_message.begin(), tx.m_message.end() }},
-            {"create_time", tx.m_createTime},
-            {"income", !tx.m_sender}
-        };
+        msg["fee"] = *fee;
+    }
+    auto feeRate = swapTx.getSwapCoinFeeRate();
+    if (feeRate)
+    {
+        msg["swap_fee_rate"] = *feeRate;
+    }
 
-        if (kernelProofHeight > 0)
-        {
-            msg["height"] = kernelProofHeight;
+    auto beamLockTxKernelID = swapTx.getBeamTxKernelId<SubTxIndex::BEAM_LOCK_TX>();
+    if (beamLockTxKernelID)
+    {
+        msg["beam_lock_kernel_id"] = *beamLockTxKernelID;
+    }
 
-            if (systemHeight >= kernelProofHeight)
+    std::string coinName = std::to_string(swapTx.getSwapCoin());
+    std::locale loc;
+    std::transform(coinName.begin(),
+                   coinName.end(),
+                   coinName.begin(),
+                   [&loc](char c) -> char { return std::tolower(c, loc); });
+    if (!coinName.empty())
+    {
+        msg["swap_coin"] = coinName;
+        coinName.push_back('_');
+    }
+
+    auto swapCoinLockTxID = swapTx.getSwapCoinTxId<SubTxIndex::LOCK_TX>();
+    if (swapCoinLockTxID)
+    {
+        std::string lockTxIdStr = "lock_tx_id";
+        msg[coinName + lockTxIdStr] = *swapCoinLockTxID;
+    }
+    auto swapCoinLockTxConfirmations = swapTx.getSwapCoinTxConfirmations<SubTxIndex::LOCK_TX>();
+    if (swapCoinLockTxConfirmations && swapTx.isBeamSide())
+    {
+        std::string lockTxConfirmationsStr = "lock_tx_confirmations";
+        msg[coinName + lockTxConfirmationsStr] = *swapCoinLockTxConfirmations;
+    }
+    
+    auto swapCoinRedeemTxID = swapTx.getSwapCoinTxId<SubTxIndex::REDEEM_TX>();
+    if (swapCoinRedeemTxID && swapTx.isBeamSide() && swapTx.isLockTxProofReceived())
+    {
+        std::string redeemTxIdStr = "redeem_tx_id";
+        msg[coinName + redeemTxIdStr] = *swapCoinRedeemTxID;
+    }
+    auto swapCoinRedeemTxConfirmations = swapTx.getSwapCoinTxConfirmations<SubTxIndex::REDEEM_TX>();
+    if (swapCoinRedeemTxConfirmations && swapTx.isBeamSide() && swapTx.isLockTxProofReceived())
+    {
+        std::string redeemTxConfirmationsStr = "redeem_tx_confirmations";
+        msg[coinName + redeemTxConfirmationsStr] = *swapCoinRedeemTxConfirmations;
+    }
+
+    auto failureReason = swapTx.getFailureReason();
+    if (failureReason)
+    {
+        msg["failure_reason"] = GetFailureMessage(*failureReason);
+    }
+}
+#endif // BEAM_ATOMIC_SWAP_SUPPORT
+
+void GetStatusResponseJson(const TxDescription& tx,
+    json& msg,
+    Height txHeight,
+    Height systemHeight,
+    bool showIdentities = false)
+{
+    std::unique_ptr<TxStatusInterpreter> statusInterpreter = nullptr;
+    if (tx.m_txType == TxType::Simple)
+    {
+        struct ApiTxStatusInterpreter : public TxStatusInterpreter
+        {
+            ApiTxStatusInterpreter(const TxParameters& txParams) : TxStatusInterpreter(txParams) {};
+            virtual ~ApiTxStatusInterpreter() {}
+            std::string getStatus() const override
             {
-                msg["confirmations"] = systemHeight - kernelProofHeight;
+                if (m_status == TxStatus::Registering)
+                    return m_selfTx ? "self sending" : (m_sender ? "sending" : "receiving");
+                return TxStatusInterpreter::getStatus();
             }
-        }
+        };
+        statusInterpreter = std::make_unique<ApiTxStatusInterpreter>(tx);
+    }
+    else if (tx.m_txType >= TxType::AssetIssue && tx.m_txType <= TxType::AssetInfo)
+    {
+        struct ApiAssetTxStatusInterpreter : public AssetTxStatusInterpreter
+        {
+            ApiAssetTxStatusInterpreter(const TxParameters& txParams) : AssetTxStatusInterpreter(txParams) {};
+            std::string getStatus() const override
+            {
+                if (m_status == TxStatus::Registering)
+                    return m_selfTx ? "self sending" : (m_sender ? "sending" : "receiving");
+                return AssetTxStatusInterpreter::getStatus();
+            }
+        };
+        statusInterpreter = std::make_unique<AssetTxStatusInterpreter>(tx);
+    }
+    else if (tx.m_txType == TxType::AtomicSwap)
+    {
+        statusInterpreter = std::make_unique<SwapTxStatusInterpreter>(tx);
+    }
+    msg = json
+    {
+        {"txId", TxIDToString(tx.m_txId)},
+        {"status", tx.m_status},
+        {"status_string", statusInterpreter ? statusInterpreter->getStatus() : "unknown"},
+        {"sender", std::to_string(tx.m_sender ? tx.m_myId : tx.m_peerId)},
+        {"receiver", std::to_string(tx.m_sender ? tx.m_peerId : tx.m_myId)},
+        {"value", tx.m_amount},
+        {"comment", std::string{ tx.m_message.begin(), tx.m_message.end() }},
+        {"create_time", tx.m_createTime},
+        {"asset_id", tx.m_assetId},
+        {"tx_type", tx.m_txType},
+        {"tx_type_string", tx.getTxTypeString()}
+    };
 
-        if (tx.m_status == TxStatus::Failed)
+    if (tx.m_txType != TxType::AtomicSwap)
+    {
+        msg["fee"] = tx.m_fee;
+        msg["income"] = !tx.m_sender;
+    }
+
+    if (tx.m_txType == TxType::AssetIssue || tx.m_txType == TxType::AssetConsume || tx.m_txType == TxType::AssetInfo)
+    {
+        msg["asset_meta"] = tx.m_assetMeta;
+    }
+
+    if (txHeight > 0)
+    {
+        msg["height"] = txHeight;
+
+        if (systemHeight >= txHeight)
+        {
+            msg["confirmations"] = systemHeight - txHeight;
+        }
+    }
+
+    if (tx.m_status == TxStatus::Failed)
+    {
+        if (tx.m_txType != TxType::AtomicSwap)
         {
             msg["failure_reason"] = GetFailureMessage(tx.m_failureReason);
         }
-        else if (tx.m_status != TxStatus::Canceled)
+    }
+    else if (tx.m_status != TxStatus::Canceled)
+    {
+        if (tx.m_txType != TxType::AssetInfo && tx.m_txType != TxType::AtomicSwap)
         {
             msg["kernel"] = to_hex(tx.m_kernelID.m_pData, tx.m_kernelID.nBytes);
         }
-        auto token = tx.GetParameter<std::string>(TxParameterID::OriginalToken);
-        if (token)
+    }
+
+    auto token = tx.GetParameter<std::string>(TxParameterID::OriginalToken);
+    if (token)
+    {
+        msg["token"] = *token;
+    }
+
+    if (showIdentities)
+    {
+        auto senderIdentity = tx.getSenderIdentity();
+        auto receiverIdentity = tx.getReceiverIdentity();
+        if (!senderIdentity.empty() && !receiverIdentity.empty())
         {
-            msg["token"] = *token;
-        }
-        if (showIdentities)
-        {
-            auto senderIdentity = tx.getSenderIdentity();
-            auto receiverIdentity = tx.getReceiverIdentity();
-            if (!senderIdentity.empty() && !receiverIdentity.empty())
-            {
-                msg["sender_identity"] = senderIdentity;
-                msg["receiver_identity"] = receiverIdentity;
-            }
+            msg["sender_identity"] = senderIdentity;
+            msg["receiver_identity"] = receiverIdentity;
         }
     }
+
+#ifdef BEAM_ATOMIC_SWAP_SUPPORT
+    if (tx.m_txType == TxType::AtomicSwap)
+    {
+        AddSwapTxDetailsToJson(tx, msg);
+    }
+#endif // BEAM_ATOMIC_SWAP_SUPPORT
+}
 
 json getNotImplError(const JsonRpcId& id)
 {
@@ -149,14 +291,6 @@ void checkTxId(const ByteBuffer& txId, const JsonRpcId& id)
         throw WalletApi::jsonrpc_exception{ ApiError::InvalidTxId, "Transaction ID has wrong format.", id };
 }
 
-void checkCAEnabled(const JsonRpcId& id)
-{
-    if (!Rules::get().CA.Enabled)
-    {
-        throw WalletApi::jsonrpc_exception{ApiError::NotSupported, "Confidential assets are not supported in this version.", id};
-    }
-}
-
 boost::optional<TxID> readTxIdParameter(const JsonRpcId& id, const json& params)
 {
     boost::optional<TxID> txId;
@@ -176,6 +310,35 @@ boost::optional<TxID> readTxIdParameter(const JsonRpcId& id, const json& params)
     }
 
     return txId;
+}
+
+boost::optional<Asset::ID> readAssetIdParameter(const JsonRpcId& id, const json& params)
+{
+    if(Api::existsJsonParam(params, "asset_id"))
+    {
+        if (!params["asset_id"].is_number_unsigned())
+        {
+            throw Api::jsonrpc_exception{ApiError::InvalidJsonRpc, "asset_id must be 64bit unsigned integer",id};
+        }
+        return params["asset_id"].get<uint32_t>();
+    }
+    return boost::optional<Asset::ID>();
+}
+
+bool readAssetsParameter(const JsonRpcId& id, const json& params)
+{
+    if (Api::existsJsonParam(params, "assets"))
+    {
+        if (params["assets"].is_boolean())
+        {
+            return params["assets"].get<bool>();
+        }
+        else
+        {
+            throw Api::jsonrpc_exception{ ApiError::InvalidJsonRpc, "assets parameter must be boolean", id };
+        }
+    }
+    return false;
 }
 
 // return 0 if parameter not found
@@ -554,6 +717,7 @@ OfferInput collectOfferInput(const JsonRpcId& id, const json& params)
             static std::regex keyRE(R"'(\"key\"\s*:\s*\"[\d\w]+\"\s*,?)'");
             LOG_INFO() << "got " << std::regex_replace(s, keyRE, "");
         }
+
         if (size == 0)
         {
             json msg
@@ -575,8 +739,7 @@ OfferInput collectOfferInput(const JsonRpcId& id, const json& params)
         {
             json msg = json::parse(data, data + size);
 
-            if(!msg["id"].is_number_integer() 
-                && !msg["id"].is_string())
+            if(!msg["id"].is_number_integer() && !msg["id"].is_string())
                 throw jsonrpc_exception{ ApiError::InvalidJsonRpc, "ID can be integer or string only." };
 
             JsonRpcId id = msg["id"];
@@ -616,7 +779,6 @@ OfferInput collectOfferInput(const JsonRpcId& id, const json& params)
             catch (const nlohmann::detail::exception& e)
             {
                 LOG_ERROR() << "json parse: " << e.what() << "\n" << getJsonString(data, size);
-
                 throw jsonrpc_exception{ ApiError::InvalidJsonRpc , e.what(), id };
             }
         }
@@ -670,26 +832,24 @@ OfferInput collectOfferInput(const JsonRpcId& id, const json& params)
 #undef ERROR_ITEM
 
         assert(false);
-
         return "unknown error.";
     }
 
-    WalletApi::WalletApi(IWalletApiHandler& handler, ACL acl)
+    WalletApi::WalletApi(IWalletApiHandler& handler, bool withAssets, ACL acl)
         : Api(handler, acl)
+        , m_withAssets(withAssets)
     {
-#define REG_FUNC(api, name, writeAccess) \
+        #define REG_FUNC(api, name, writeAccess) \
         _methods[name] = {BIND_THIS_MEMFN(on##api##Message), writeAccess};
-
         WALLET_API_METHODS(REG_FUNC)
+        #undef REG_FUNC
 
-#undef REG_FUNC
-#define REG_ALIASES_FUNC(aliasName, api, name, writeAccess) \
+        #define REG_ALIASES_FUNC(aliasName, api, name, writeAccess) \
         _methods[aliasName] = {BIND_THIS_MEMFN(on##api##Message), writeAccess};
-
-         WALLET_API_METHODS_ALIASES(REG_ALIASES_FUNC)
-#undef REG_ALIASES_FUNC
-            //WALLET_API_METHODS_ALIASES
-    };
+        WALLET_API_METHODS_ALIASES(REG_ALIASES_FUNC)
+        #undef REG_ALIASES_FUNC
+        //WALLET_API_METHODS_ALIASES
+    }
 
     IWalletApiHandler& WalletApi::getHandler() const
     {
@@ -700,7 +860,6 @@ OfferInput collectOfferInput(const JsonRpcId& id, const json& params)
     {
         CreateAddress createAddress;
         FillAddressData(id, params, createAddress);
-
         getHandler().onMessage(id, createAddress);
     }
 
@@ -725,8 +884,6 @@ OfferInput collectOfferInput(const JsonRpcId& id, const json& params)
         editAddress.address.FromHex(params["address"]);
 
         FillAddressData(id, params, editAddress);
-
-
         getHandler().onMessage(id, editAddress);
     }
 
@@ -735,7 +892,6 @@ OfferInput collectOfferInput(const JsonRpcId& id, const json& params)
         checkJsonParam(params, "own", id);
 
         AddrList addrList;
-
         addrList.own = params["own"];
 
         getHandler().onMessage(id, addrList);
@@ -767,6 +923,12 @@ OfferInput collectOfferInput(const JsonRpcId& id, const json& params)
 
         Send send;
         send.value = params["value"];
+        send.assetId = readAssetIdParameter(id, params);
+
+        if (send.assetId && *send.assetId != Asset::s_InvalidID)
+        {
+            checkCAEnabled(id);
+        }
 
         if (existsJsonParam(params, "coins"))
         {
@@ -822,7 +984,6 @@ OfferInput collectOfferInput(const JsonRpcId& id, const json& params)
         }
 
         send.txId = readTxIdParameter(id, params);
-
         getHandler().onMessage(id, send);
     }
 
@@ -846,9 +1007,14 @@ OfferInput collectOfferInput(const JsonRpcId& id, const json& params)
         checkJsonParam(params, "coins", id);
 
         if (!params["coins"].is_array() || params["coins"].size() <= 0)
-            throw jsonrpc_exception{ ApiError::InvalidParamsJsonRpc, "Coins parameter must be a nonempty array.", id };
+            throw jsonrpc_exception{ ApiError::InvalidParamsJsonRpc, "Coins parameter must be a non-empty array.", id };
 
         Split split;
+        split.assetId = readAssetIdParameter(id, params);
+        if (split.assetId && *split.assetId != Asset::s_InvalidID)
+        {
+            checkCAEnabled(id);
+        }
 
         for (const auto& amount : params["coins"])
         {
@@ -869,7 +1035,6 @@ OfferInput collectOfferInput(const JsonRpcId& id, const json& params)
         }
 
         split.txId = readTxIdParameter(id, params);
-
         getHandler().onMessage(id, split);
     }
 
@@ -904,25 +1069,21 @@ OfferInput collectOfferInput(const JsonRpcId& id, const json& params)
     template<typename T>
     void ReadAssetParams(const JsonRpcId& id, const json& params, T& data)
     {
-        if (Api::existsJsonParam(params, "meta"))
+        if (Api::existsJsonParam(params, "asset_meta"))
         {
-            if (!params["meta"].is_string() || params["meta"].empty())
+            if (!params["asset_meta"].is_string() || params["asset_meta"].get<std::string>().empty())
             {
                 throw Api::jsonrpc_exception{ApiError::InvalidJsonRpc, "meta should be non-empty string", id};
             }
-            data.meta = params["meta"].get<std::string>();
+            data.assetMeta = params["asset_meta"].get<std::string>();
         }
-        else if(Api::existsJsonParam(params, "assetid"))
+        else if(Api::existsJsonParam(params, "asset_id"))
         {
-            if (!params["assetid"].is_number_unsigned() || params["assetid"] == 0)
-            {
-                throw Api::jsonrpc_exception{ApiError::InvalidJsonRpc, "assetid must be non zero 64bit unsigned integer", id};
-            }
-            data.assetId = params["assetid"].get<uint32_t>();
+            data.assetId = readAssetIdParameter(id, params);
         }
         else
         {
-            throw Api::jsonrpc_exception{ ApiError::InvalidJsonRpc, "assetid or meta is required", id };
+            throw Api::jsonrpc_exception{ ApiError::InvalidJsonRpc, "asset_id or meta is required", id };
         }
     }
 
@@ -934,6 +1095,19 @@ OfferInput collectOfferInput(const JsonRpcId& id, const json& params)
     void WalletApi::onConsumeMessage(const JsonRpcId& id, const json& params)
     {
         onIssueConsumeMessage<Consume>(true, id, params);
+    }
+
+    void WalletApi::checkCAEnabled(const JsonRpcId& id)
+    {
+        if (!Rules::get().CA.Enabled)
+        {
+            throw WalletApi::jsonrpc_exception{ApiError::NotSupported, "Confidential assets are not supported until fork2.", id};
+        }
+
+        if (!m_withAssets)
+        {
+            throw WalletApi::jsonrpc_exception{ApiError::NotSupported, "Confidential assets are disabled. Add --enable_assets to command line.", id};
+        }
     }
 
     template<typename T>
@@ -975,19 +1149,17 @@ OfferInput collectOfferInput(const JsonRpcId& id, const json& params)
 
     void WalletApi::onGetAssetInfoMessage(const JsonRpcId& id, const json& params)
     {
-        checkCAEnabled(id);
-
         GetAssetInfo data;
         ReadAssetParams(id, params, data);
 
         getHandler().onMessage(id, data);
     }
 
-    void WalletApi::onAssetInfoMessage(const JsonRpcId& id, const json& params)
+    void WalletApi::onTxAssetInfoMessage(const JsonRpcId& id, const json& params)
     {
         checkCAEnabled(id);
 
-        AssetInfo data;
+        TxAssetInfo data;
         ReadAssetParams(id, params, data);
 
         data.txId = readTxIdParameter(id, params);
@@ -997,6 +1169,7 @@ OfferInput collectOfferInput(const JsonRpcId& id, const json& params)
     void WalletApi::onGetUtxoMessage(const JsonRpcId& id, const json& params)
     {
         GetUtxo getUtxo;
+        getUtxo.withAssets = readAssetsParameter(id, params);
 
         if (existsJsonParam(params, "count"))
         {
@@ -1004,7 +1177,15 @@ OfferInput collectOfferInput(const JsonRpcId& id, const json& params)
             {
                 getUtxo.count = params["count"];
             }
-            else throw jsonrpc_exception{ ApiError::InvalidJsonRpc, "Invalid 'count' parameter.", id };
+            else
+            {
+                throw jsonrpc_exception{ ApiError::InvalidJsonRpc, "Invalid 'count' parameter.", id};
+            }
+        }
+
+        if (existsJsonParam(params, "filter"))
+        {
+            getUtxo.filter.assetId = readAssetIdParameter(id, params["filter"]);
         }
 
         if (existsJsonParam(params, "skip"))
@@ -1013,7 +1194,10 @@ OfferInput collectOfferInput(const JsonRpcId& id, const json& params)
             {
                 getUtxo.skip = params["skip"];
             }
-            else throw jsonrpc_exception{ ApiError::InvalidJsonRpc, "Invalid 'skip' parameter.", id };
+            else
+            {
+                throw jsonrpc_exception{ApiError::InvalidJsonRpc, "Invalid 'skip' parameter.", id};
+            }
         }
 
         getHandler().onMessage(id, getUtxo);
@@ -1046,6 +1230,7 @@ OfferInput collectOfferInput(const JsonRpcId& id, const json& params)
     void WalletApi::onTxListMessage(const JsonRpcId& id, const json& params)
     {
         TxList txList;
+        txList.withAssets = readAssetsParameter(id, params);
 
         if (existsJsonParam(params, "filter"))
         {
@@ -1060,6 +1245,8 @@ OfferInput collectOfferInput(const JsonRpcId& id, const json& params)
             {
                 txList.filter.height = (Height)params["filter"]["height"];
             }
+
+            txList.filter.assetId = readAssetIdParameter(id, params["filter"]);
         }
 
         if (existsJsonParam(params, "count"))
@@ -1086,6 +1273,7 @@ OfferInput collectOfferInput(const JsonRpcId& id, const json& params)
     void WalletApi::onWalletStatusMessage(const JsonRpcId& id, const json& params)
     {
         WalletStatus walletStatus;
+        walletStatus.withAssets = readAssetsParameter(id, params);
         getHandler().onMessage(id, walletStatus);
     }
 
@@ -1327,7 +1515,8 @@ OfferInput collectOfferInput(const JsonRpcId& id, const json& params)
                 {"duration", addr.m_duration},
                 {"expired", addr.isExpired()},
                 {"own", addr.isOwn()},
-                {"ownIDBase64", to_base64(addr.m_OwnID)},
+                {"own_id", addr.m_OwnID},
+                {"own_id_str", std::to_string(addr.m_OwnID)},
             });
             if (addr.m_Identity != Zero)
             {
@@ -1368,6 +1557,7 @@ OfferInput collectOfferInput(const JsonRpcId& id, const json& params)
             msg["result"].push_back(
             { 
                 {"id", utxo.toStringID()},
+                {"asset_id", utxo.m_ID.m_AssetID},
                 {"amount", utxo.m_ID.m_Value},
                 {"type", (const char*)FourCC::Text(utxo.m_ID.m_Type)},
                 {"maturity", utxo.get_Maturity()},
@@ -1408,7 +1598,7 @@ OfferInput collectOfferInput(const JsonRpcId& id, const json& params)
         };
     }
 
-    void WalletApi::getResponse(const JsonRpcId& id, const AssetInfo::Response& res, json& msg)
+    void WalletApi::getResponse(const JsonRpcId& id, const TxAssetInfo::Response& res, json& msg)
     {
         msg = json
         {
@@ -1433,9 +1623,7 @@ OfferInput collectOfferInput(const JsonRpcId& id, const json& params)
             {"id", id},
             {"result",
                 {
-                    // TODO:ASSETS check if displayed in cli, refresh height
-                    {"assetId",       res.AssetInfo.m_ID},
-                    {"value",         res.AssetInfo.m_Value.str()},
+                    {"asset_id",      res.AssetInfo.m_ID},
                     {"lockHeight",    res.AssetInfo.m_LockHeight},
                     {"refreshHeight", res.AssetInfo.m_RefreshHeight},
                     {"ownerId",       res.AssetInfo.m_Owner.str()},
@@ -1444,7 +1632,14 @@ OfferInput collectOfferInput(const JsonRpcId& id, const json& params)
                 }
             }
         };
+
+        auto& jsres = msg["result"];
+        if(res.AssetInfo.m_Value <= MAX_ALLOWED_INT) {
+            jsres["emission"] = AmountBig::get_Lo(res.AssetInfo.m_Value);
+        }
+        jsres["emission_str"] = std::to_string(res.AssetInfo.m_Value);
     }
+
     void WalletApi::getResponse(const JsonRpcId& id, const Consume::Response& res, json& msg)
     {
         msg = json
@@ -1468,8 +1663,7 @@ OfferInput collectOfferInput(const JsonRpcId& id, const json& params)
             {"result", {}}
         };
 
-        GetStatusResponseJson(
-            res.tx, msg["result"], res.kernelProofHeight, res.systemHeight, true);
+        GetStatusResponseJson(res.tx, msg["result"], res.txHeight, res.systemHeight, true);
     }
 
     void WalletApi::getResponse(const JsonRpcId& id, const Split::Response& res, json& msg)
@@ -1521,7 +1715,7 @@ OfferInput collectOfferInput(const JsonRpcId& id, const json& params)
             GetStatusResponseJson(
                 resItem.tx,
                 item,
-                resItem.kernelProofHeight,
+                resItem.txHeight,
                 resItem.systemHeight);
             msg["result"].push_back(item);
         }
@@ -1529,23 +1723,73 @@ OfferInput collectOfferInput(const JsonRpcId& id, const json& params)
 
     void WalletApi::getResponse(const JsonRpcId& id, const WalletStatus::Response& res, json& msg)
     {
-        msg = json
+        if (res.totals)
         {
-            {JsonRpcHrd, JsonRpcVerHrd},
-            {"id", id},
-            {"result",
-                {
-                    {"current_height", res.currentHeight},
-                    {"current_state_hash", to_hex(res.currentStateHash.m_pData, res.currentStateHash.nBytes)},
-                    {"prev_state_hash", to_hex(res.prevStateHash.m_pData, res.prevStateHash.nBytes)},
-                    {"available", res.available},
-                    {"receiving", res.receiving},
-                    {"sending", res.sending},
-                    {"maturing", res.maturing},
-                    {"difficulty", res.difficulty},
+            msg = json
+            {
+                {JsonRpcHrd, JsonRpcVerHrd},
+                {"id", id},
+                {"result",
+                    {
+                        {"current_height", res.currentHeight},
+                        {"current_state_hash", to_hex(res.currentStateHash.m_pData, res.currentStateHash.nBytes)},
+                        {"prev_state_hash", to_hex(res.prevStateHash.m_pData, res.prevStateHash.nBytes)},
+                        {"difficulty", res.difficulty},
+                        {"totals", json::array()}
+                    }
                 }
+            };
+
+            for(const auto& it: res.totals->allTotals)
+            {
+                const auto& totals = it.second;
+                json jtotals;
+
+                jtotals["asset_id"] = totals.AssetId;
+
+                if (totals.Avail <= MAX_ALLOWED_INT) {
+                    jtotals["available"] = AmountBig::get_Lo(totals.Avail);
+                }
+                jtotals["available_str"] = std::to_string(totals.Avail);
+
+                if (totals.Incoming <= MAX_ALLOWED_INT) {
+                    jtotals["receiving"] = AmountBig::get_Lo(totals.Incoming);
+                }
+                jtotals["receiving_str"] = std::to_string(totals.Incoming);
+
+                if (totals.Outgoing <= MAX_ALLOWED_INT) {
+                    jtotals["sending"] = AmountBig::get_Lo(totals.Outgoing);
+                }
+                jtotals["sending_str"] = std::to_string(totals.Outgoing);
+
+                if (totals.Maturing <= MAX_ALLOWED_INT) {
+                    jtotals["maturing"] = AmountBig::get_Lo(totals.Maturing);
+                }
+                jtotals["maturing_str"] = std::to_string(totals.Maturing);
+
+                msg["result"]["totals"].push_back(jtotals);
             }
-        };
+        }
+        else
+        {
+            msg = json
+            {
+                {JsonRpcHrd, JsonRpcVerHrd},
+                {"id", id},
+                {"result",
+                    {
+                        {"current_height", res.currentHeight},
+                        {"current_state_hash", to_hex(res.currentStateHash.m_pData, res.currentStateHash.nBytes)},
+                        {"prev_state_hash", to_hex(res.prevStateHash.m_pData, res.prevStateHash.nBytes)},
+                        {"available",  res.available},
+                        {"receiving",  res.receiving},
+                        {"sending",    res.sending},
+                        {"maturing",   res.maturing},
+                        {"difficulty", res.difficulty}
+                    }
+                }
+            };
+        }
     }
 
     void WalletApi::getResponse(const JsonRpcId& id, const GenerateTxId::Response& res, json& msg)
@@ -1606,6 +1850,7 @@ OfferInput collectOfferInput(const JsonRpcId& id, const json& params)
                     {"receiver", std::to_string(res.paymentInfo.m_Receiver)},
                     {"amount", res.paymentInfo.m_Amount},
                     {"kernel", std::to_string(res.paymentInfo.m_KernelID)},
+                    {"asset_id", res.paymentInfo.m_AssetID}
                     //{"signature", std::to_string(res.paymentInfo.m_Signature)}
                 }
             }

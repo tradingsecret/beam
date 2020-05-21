@@ -26,7 +26,8 @@ namespace beam
     {
         SwapOffers,
         SoftwareUpdates,
-        ExchangeRates
+        ExchangeRates,
+        WalletUpdates       // used for Wallet Core library based implementations
     };
 
     /**
@@ -65,6 +66,8 @@ namespace beam
      */
     struct IBroadcastMsgGateway
     {
+        static constexpr uint32_t m_bbsTimeWindow = 12*60*60;       // BBS message lifetime is 12 hours
+        
         virtual void registerListener(BroadcastContentType, IBroadcastListener*) = 0;
         virtual void unregisterListener(BroadcastContentType) = 0;
         virtual void sendRawMessage(BroadcastContentType type, const ByteBuffer&) = 0;

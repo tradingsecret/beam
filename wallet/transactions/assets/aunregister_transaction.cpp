@@ -60,15 +60,14 @@ namespace beam::wallet
     AssetUnregisterTransaction::AssetUnregisterTransaction(INegotiatorGateway& gateway
                                         , IWalletDB::Ptr walletDB
                                         , const TxID& txID)
-        : BaseTransaction{ gateway, std::move(walletDB), txID}
+        : AssetTransaction(gateway, std::move(walletDB), txID)
     {
     }
 
     void AssetUnregisterTransaction::UpdateImpl()
     {
-        if (!IsLoopbackTransaction())
+        if (!AssetTransaction::BaseUpdate())
         {
-            OnFailed(TxFailureReason::NotLoopback, true);
             return;
         }
 
@@ -83,25 +82,43 @@ namespace beam::wallet
                            << " saving " << PrintableAmount(builder.GetFee(), false) << " transaction fee";
 
                 UpdateTxDescription(TxStatus::InProgress);
-                SetState(State::AssetCheck);
+                SetState(State::AssetConfirmation);
                 ConfirmAsset();
                 return;
             }
 
-            if (GetState() == State::AssetCheck)
+            if (GetState() == State::AssetConfirmation)
             {
-                Height auHeight = 0, acHeight = 0;
+                Height auHeight = 0;
                 GetParameter(TxParameterID::AssetUnconfirmedHeight, auHeight);
-                GetParameter(TxParameterID::AssetConfirmedHeight, acHeight);
-
-                if(auHeight || !acHeight)
+                if (auHeight)
                 {
                     OnFailed(TxFailureReason::AssetConfirmFailed);
                     return;
                 }
 
+                Height acHeight = 0;
+                GetParameter(TxParameterID::AssetConfirmedHeight, acHeight);
+                if (!acHeight)
+                {
+                    ConfirmAsset();
+                    return;
+                }
+
+                SetState(State::AssetCheck);
+            }
+
+            if (GetState() == State::AssetCheck)
+            {
                 Asset::Full fullInfo;
-                if (!GetParameter(TxParameterID::AssetFullInfo, fullInfo))
+                if (!GetParameter(TxParameterID::AssetInfoFull, fullInfo) || !fullInfo.IsValid())
+                {
+                    OnFailed(TxFailureReason::NoAssetInfo, true);
+                    return;
+                }
+
+                Height acHeight = 0;
+                if (!GetParameter(TxParameterID::AssetConfirmedHeight, acHeight) || !acHeight)
                 {
                     OnFailed(TxFailureReason::NoAssetInfo, true);
                     return;
@@ -110,13 +127,14 @@ namespace beam::wallet
                 const WalletAsset info(fullInfo, acHeight);
 
                 //
-                // Asset ID must be valid
+                // Asset ID && Asset Owner ID must be valid
                 //
                 if (info.m_ID == Asset::s_InvalidID)
                 {
-                    OnFailed(TxFailureReason::NoAssetId, true);
+                    OnFailed(TxFailureReason::InvalidAssetId, true);
                     return;
                 }
+
                 SetParameter(TxParameterID::AssetID, info.m_ID);
 
                 //
@@ -124,7 +142,7 @@ namespace beam::wallet
                 //
                 if (info.m_Owner != _builder->GetAssetOwnerId())
                 {
-                    OnFailed(TxFailureReason::NoAssetId, true);
+                    OnFailed(TxFailureReason::InvalidAssetOwnerId, true);
                     return;
                 }
 
@@ -140,9 +158,7 @@ namespace beam::wallet
                 //
                 // Last burn to 0 should not be able to roll back
                 //
-                Block::SystemState::Full tip;
-                GetTip(tip);
-                if (info.CanRollback(tip.m_Height))
+                if (info.CanRollback(m_WalletDB->getCurrentHeight()))
                 {
                     OnFailed(TxFailureReason::AssetLocked, true);
                     return;
@@ -152,13 +168,15 @@ namespace beam::wallet
                 // Here we know that this asset is safe to unregister
                 // It is valid, 0 emission and this cannot be rolled back
                 //
+                SetState(State::Making);
+            }
 
+            if(GetState() == State::Making)
+            {
                 if(!builder.GetInitialTxParams())
                 {
                     builder.AddRefund();
                 }
-
-                SetState(State::Making);
                 builder.CreateOutputs();
                 builder.MakeKernel();
             }
@@ -167,11 +185,6 @@ namespace beam::wallet
         auto registered = proto::TxStatus::Unspecified;
         if (!GetParameter(TxParameterID::TransactionRegistered, registered))
         {
-            if (CheckExpired())
-            {
-                return;
-            }
-
             auto transaction = builder.CreateTransaction();
             TxBase::Context::Params params;
 			TxBase::Context ctx(params);
@@ -219,11 +232,6 @@ namespace beam::wallet
     void AssetUnregisterTransaction::ConfirmAsset()
     {
         GetGateway().confirm_asset(GetTxID(), _builder->GetAssetOwnerId(), kDefaultSubTxID);
-    }
-
-    bool AssetUnregisterTransaction::IsLoopbackTransaction() const
-    {
-        return GetMandatoryParameter<bool>(TxParameterID::IsSender) && IsInitiator();
     }
 
     bool AssetUnregisterTransaction::ShouldNotifyAboutChanges(TxParameterID paramID) const

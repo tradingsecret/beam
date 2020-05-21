@@ -34,6 +34,7 @@ namespace beam
         extern const char* STORAGE;
         extern const char* WALLET_STORAGE;
         extern const char* MINING_THREADS;
+        extern const char* POW_SOLVE_TIME;
         extern const char* VERIFICATION_THREADS;
         extern const char* NONCEPREFIX_DIGITS;
         extern const char* NODE_PEER;
@@ -131,6 +132,7 @@ namespace beam
         extern const char* SWAP_BEAM_SIDE;
         extern const char* SWAP_TX_HISTORY;
         extern const char* NODE_POLL_PERIOD;
+        extern const char* WITH_SYNC_PIPES;
         extern const char* PROXY_USE;
         extern const char* PROXY_ADDRESS;
         extern const char* ALLOWED_ORIGIN;
@@ -187,8 +189,12 @@ namespace beam
         extern const char* ASSET_UNREGISTER;
         extern const char* ASSET_ID;
         extern const char* ASSET_METADATA;
+        extern const char* ASSETS;
+        extern const char* WITH_ASSETS;
 
         // broadcaster
+        extern const char* GENERATE_KEYS;
+        extern const char* TRANSMIT;
         extern const char* PRIVATE_KEY;
         extern const char* MESSAGE_TYPE;
         extern const char* UPDATE_VERSION;
@@ -196,6 +202,15 @@ namespace beam
         extern const char* EXCHANGE_CURR;
         extern const char* EXCHANGE_RATE;
         extern const char* EXCHANGE_UNIT;
+
+        // lelantus
+        extern const char* INSERT_TO_POOL;
+        extern const char* EXTRACT_FROM_POOL;
+        extern const char* SHIELDED_UTXOS;
+        extern const char* SHIELDED_ID;
+        extern const char* WINDOW_BEGIN;
+        extern const char* SHIELDED_TX_HISTORY;
+        extern const char* VOUCHER_COUNT;
 
         // Defaults that should be accessible outside
         extern const Amount kMinimumFee;
@@ -218,6 +233,9 @@ namespace beam
     po::variables_map getOptions(int argc, char* argv[], const char* configFile, const po::options_description& options, bool walletOptions = false);
 
     void getRulesOptions(po::variables_map& vm);
+
+    bool ReadCfgFromFile(po::variables_map&, const po::options_description&, const char* szFile);
+    bool ReadCfgFromFileCommon(po::variables_map&, const po::options_description&);
 
     int getLogLevel(const std::string &dstLog, const po::variables_map& vm, int defaultValue = LOG_LEVEL_DEBUG);
 

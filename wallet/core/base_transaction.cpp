@@ -348,8 +348,6 @@ namespace beam::wallet
             m_WalletDB->SlotFree(iSlot);
             SetParameter(TxParameterID::NonceSlot, IPrivateKeyKeeper2::Slot::Invalid);
         }
-
-
     }
 
     void BaseTransaction::FreeResources()
@@ -445,8 +443,8 @@ namespace beam::wallet
         std::vector<Coin> modified = GetWalletDB()->getCoinsByTx(GetTxID());
         for (auto& coin : modified)
         {
-            bool bIn = (coin.m_createTxId == m_ID);
-            bool bOut = (coin.m_spentTxId == m_ID);
+            bool bIn = (coin.m_createTxId && *coin.m_createTxId == m_ID);
+            bool bOut = (coin.m_spentTxId && *coin.m_spentTxId == m_ID);
             if (bIn || bOut)
             {
                 if (bIn)

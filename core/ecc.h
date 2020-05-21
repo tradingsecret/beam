@@ -111,6 +111,7 @@ namespace ECC
 
 		int cmp(const Scalar& x) const { return m_Value.cmp(x.m_Value); }
 		COMPARISON_VIA_CMP
+		std::string str() const;
 	};
 
 	std::ostream& operator << (std::ostream&, const Scalar&);
@@ -475,5 +476,16 @@ namespace ECC
 			void get_Msg(Hash::Value&, Oracle&) const;
 		};
 	}
+}
+
+// TODO: review this types, they don't have standard layout
+inline void ZeroObject(ECC::Signature& x)
+{
+	ZeroObjectUnchecked(x);
+}
+
+inline void ZeroObject(ECC::RangeProof::Public& x)
+{
+	ZeroObjectUnchecked(x);
 }
 

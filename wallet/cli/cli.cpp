@@ -41,6 +41,10 @@
 #include "utility/string_helpers.h"
 #include "version.h"
 
+//lelantus
+#include "wallet/transactions/lelantus/pull_transaction.h"
+#include "wallet/transactions/lelantus/push_transaction.h"
+
 #ifndef LOG_VERBOSE_ENABLED
     #define LOG_VERBOSE_ENABLED 0
 #endif
@@ -60,10 +64,12 @@
 #include <boost/filesystem.hpp>
 #include <boost/format.hpp>
 #include <boost/algorithm/string/trim.hpp>
+#include <boost/multiprecision/cpp_dec_float.hpp>
 
 #include <iomanip>
 #include <iterator>
 #include <future>
+#include <regex>
 #include <core/block_crypt.h>
 
 using namespace std;
@@ -96,47 +102,8 @@ namespace beam
         BOOST_ASSERT(str.length() <= 30);
         return str;
     }
-
-    const char* getTxStatus(const TxDescription& tx)
-    {
-        switch (tx.m_status)
-        {
-        case TxStatus::Pending: return kTxStatusPending;
-        case TxStatus::InProgress: return tx.m_sender ? kTxStatusWaitingForReceiver : kTxStatusWaitingForSender;
-        case TxStatus::Registering: return tx.m_selfTx ? kTxStatusSendingToOwn : kTxStatusInProgress;
-        case TxStatus::Canceled: return kTxStatusCancelled;
-        case TxStatus::Completed:
-        {
-            switch (tx.m_txType)
-            {
-                case TxType::AssetIssue: return kTxStatusIssued;
-                case TxType::AssetConsume: return kTxStatusConsumed;
-                case TxType::AssetReg: return kTxStatusRegistered;
-                case TxType::AssetUnreg: return kTxStatusUnregistered;
-                case TxType::AssetInfo: return kTxStatusInfoProvided;
-                default:
-                {
-                    if (tx.m_selfTx) return kTxStatusSentToOwn;
-                    return tx.m_sender ? kTxStatusSent : kTxStatusReceived;
-                }
-            }
-        }
-        case TxStatus::Failed: return TxFailureReason::TransactionExpired == tx.m_failureReason
-            ? kTxStatusExpired : kTxStatusFailed;
-        default:
-            BOOST_ASSERT_MSG(false, kErrorUnknowmTxStatus);
-        }
-        return "";
-    }
-
-    const char* getSwapTxStatus(const IWalletDB::Ptr& walletDB, const TxDescription& tx)
-    {
-        wallet::AtomicSwapTransaction::State state = wallet::AtomicSwapTransaction::State::Initial;
-        storage::getTxParameter(*walletDB, tx.m_txId, wallet::TxParameterID::State, state);
-
-        return wallet::getSwapTxStatus(state);
-    }
 }  // namespace beam
+
 namespace
 {
     SecString GetPassword(const po::variables_map& vm);
@@ -185,6 +152,39 @@ namespace
         }
 
         auto walletDB = WalletDB::open(walletPath, pass);
+        walletDB->addStatusInterpreterCreator(TxType::Simple, [] (const TxParameters& txParams) {
+            return TxStatusInterpreter(txParams);
+        });
+
+        auto assetsStatusIterpreterCreator = [] (const TxParameters& txParams)
+        {
+            return AssetTxStatusInterpreter(txParams);
+        };
+
+        walletDB->addStatusInterpreterCreator(TxType::AssetIssue, assetsStatusIterpreterCreator);
+        walletDB->addStatusInterpreterCreator(TxType::AssetConsume, assetsStatusIterpreterCreator);
+        walletDB->addStatusInterpreterCreator(TxType::AssetReg, assetsStatusIterpreterCreator);
+        walletDB->addStatusInterpreterCreator(TxType::AssetUnreg, assetsStatusIterpreterCreator);
+        walletDB->addStatusInterpreterCreator(TxType::AssetInfo, assetsStatusIterpreterCreator);
+
+        walletDB->addStatusInterpreterCreator(TxType::AtomicSwap, [] (const TxParameters& txParams) {
+            struct CliSwapTxStatusInterpreter : public TxStatusInterpreter
+            {
+                explicit CliSwapTxStatusInterpreter(const TxParameters& txParams) : TxStatusInterpreter(txParams)
+                {
+                    auto value = txParams.GetParameter(wallet::TxParameterID::State);
+                    if (value) fromByteBuffer(*value, m_state);
+                }
+                virtual ~CliSwapTxStatusInterpreter() {}
+                std::string getStatus() const override
+                {
+                    return wallet::getSwapTxStatus(m_state);
+                }
+                wallet::AtomicSwapTransaction::State m_state = wallet::AtomicSwapTransaction::State::Initial;
+
+            };
+            return CliSwapTxStatusInterpreter(txParams);
+        });
         LOG_INFO() << kWalletOpenedMessage;
         return walletDB;
     }
@@ -566,12 +566,27 @@ namespace
         return InitDataBase(vm, false);
     }
 
+    void AddVoucherParameter(const po::variables_map& vm, TxParameters& params, IWalletDB::Ptr db, uint64_t ownID)
+    {
+        if (auto it = vm.find(cli::VOUCHER_COUNT); it != vm.end())
+        {
+            auto kdf = db->get_MasterKdf();
+            auto vouchers = GenerateVoucherList(kdf, ownID, it->second.as<Positive<uint32_t>>().value);
+            if (!vouchers.empty())
+            {
+                // add voucher parameter
+                params.SetParameter(TxParameterID::ShieldedVoucherList, vouchers);
+                params.SetParameter(TxParameterID::TransactionType, beam::wallet::TxType::PushTransaction);
+            }
+        }
+    }
+
     int GetToken(const po::variables_map& vm)
     {
         TxParameters params;
-        if (vm.find(cli::RECEIVER_ADDR) != vm.end())
+        if (auto it = vm.find(cli::RECEIVER_ADDR); it != vm.end())
         {
-            auto receiver = vm[cli::RECEIVER_ADDR].as<string>();
+            auto receiver = it->second.as<string>();
             bool isValid = true;
             WalletID walletID;
             ByteBuffer buffer = from_hex(receiver, &isValid);
@@ -593,7 +608,11 @@ namespace
                 return -1;
             }
             params.SetParameter(TxParameterID::PeerID, walletID);
+#ifdef BEAM_LIB_VERSION
+            params.SetParameter(beam::wallet::TxParameterID::LibraryVersion, std::string(BEAM_LIB_VERSION));
+#endif // BEAM_LIB_VERSION
             params.SetParameter(TxParameterID::PeerSecureWalletID, address->m_Identity);
+            AddVoucherParameter(vm, params, walletDB, address->m_OwnID);
         }
         else
         {
@@ -602,9 +621,13 @@ namespace
             
             params.SetParameter(TxParameterID::PeerID, address.m_walletID);
             params.SetParameter(TxParameterID::PeerSecureWalletID, address.m_Identity);
+            AddVoucherParameter(vm, params, walletDB, address.m_OwnID);
         }
 
-        params.SetParameter(beam::wallet::TxParameterID::TransactionType, beam::wallet::TxType::Simple);
+        if (!params.GetParameter(TxParameterID::TransactionType))
+        {
+            params.SetParameter(TxParameterID::TransactionType, beam::wallet::TxType::Simple);
+        }
         LOG_INFO() << "token: " << to_string(params);
         return 0;
     }
@@ -706,28 +729,51 @@ namespace
         return 0;
     }
 
-    void ShowAssetInfo(IWalletDB::Ptr db, const storage::Totals::AssetTotals& totals)
+    Height ShowAssetInfo(IWalletDB::Ptr db, const storage::Totals::AssetTotals& totals)
     {
+        auto isOwned  = false;
+        std::string coinName = kNA;
+        std::string unitName = kAmountASSET;
+        std::string nthName  = kAmountAGROTH;
+        std::string ownerStr = kNA;
+        Height lkHeight = 0;
+        Height rfHeight = 0;
+
         const auto info = db->findAsset(totals.AssetId);
-        const WalletAssetMeta& meta = info.is_initialized() ? WalletAssetMeta(*info) : WalletAssetMeta(Asset::Full());
-        const bool isOwned  = info.is_initialized() ? info->m_IsOwned : false;
-        const auto unitName = meta.isStd() ? meta.GetUnitName() : kAmountASSET;
-        const auto nthName  = meta.isStd() ? meta.GetNthUnitName() : kAmountAGROTH;
+        if (info.is_initialized())
+        {
+            const WalletAssetMeta &meta = info.is_initialized() ? WalletAssetMeta(*info) : WalletAssetMeta(Asset::Full());
+            isOwned  = info->m_IsOwned;
+            unitName = meta.isStd() ? meta.GetUnitName() : kAmountASSET;
+            nthName  = meta.isStd() ? meta.GetNthUnitName() : kAmountAGROTH;
+            ownerStr = (isOwned ? info->m_Owner.str() + "\nYou own this asset": info->m_Owner.str());
+            coinName = meta.isStd() ? meta.GetName() + " (" + meta.GetShortName() + ")" : kNA;
+            lkHeight = info->m_LockHeight;
+            rfHeight = info->m_RefreshHeight;
+        }
 
         const unsigned kWidth = 26;
         cout << boost::format(kWalletAssetSummaryFormat)
-             % totals.AssetId
-             % (meta.isStd() ? meta.GetName() + "(" + meta.GetShortName() + ")" : kNA)
-             % (isOwned ? (boost::format(kWalletAssetOwnerFormat) % info->m_Owner).str() : "")
+             % boost::io::group(left, setfill('.'), setw(kWidth), kWalletAssetIDFormat) % totals.AssetId
+             % boost::io::group(left, setfill('.'), setw(kWidth), kWalletAssetNameFormat) % coinName
+             % boost::io::group(left, setfill('.'), setw(kWidth), kWalletAssetLockHeightFormat) % lkHeight
+             % boost::io::group(left, setfill('.'), setw(kWidth), kWalletAssetRefreshHeightFormat) % rfHeight
+             % boost::io::group(left, setfill('.'), setw(kWidth), kWalletAssetOwnerFormat) % ownerStr
              % boost::io::group(left, setfill('.'), setw(kWidth), kWalletSummaryFieldAvailable) % to_string(PrintableAmount(totals.Avail, false, unitName, nthName))
              % boost::io::group(left, setfill('.'), setw(kWidth), kWalletSummaryFieldInProgress) % to_string(PrintableAmount(totals.Incoming, false, unitName, nthName))
              % boost::io::group(left, setfill('.'), setw(kWidth), kWalletSummaryFieldUnavailable) % to_string(PrintableAmount(totals.Unavail, false, unitName, nthName))
              % boost::io::group(left, setfill('.'), setw(kWidth), kWalletSummaryFieldTotalUnspent) % to_string(PrintableAmount(totals.Unspent, false, unitName, nthName));
 
-        if (totals.MinCoinHeight && info->m_LockHeight > totals.MinCoinHeight)
+        if (!info.is_initialized())
+        {
+            cout << kWalletNoInfo;
+        }
+        else if (totals.MinCoinHeight && info->m_LockHeight > totals.MinCoinHeight)
         {
             cout << boost::format(kWalletUnreliableAsset) % info->m_LockHeight;
         }
+
+        return info ? info->m_LockHeight : 0;
     }
 
     std::pair<std::string, std::string> GetAssetNames(IWalletDB::Ptr walletDB, Asset::ID assetId)
@@ -741,57 +787,138 @@ namespace
             const WalletAssetMeta &meta = info.is_initialized() ? WalletAssetMeta(*info) : WalletAssetMeta(Asset::Full());
             unitName = meta.isStd() ? meta.GetUnitName() : kAmountASSET;
             nthName  = meta.isStd() ? meta.GetNthUnitName() : kAmountAGROTH;
-    }
+        }
 
         return std::make_pair(unitName, nthName);
+    }
+
+    Height GetAssetLockHeight(IWalletDB::Ptr walletDB, Asset::ID assetId)
+    {
+        if (assetId != Asset::s_InvalidID)
+        {
+            const auto info = walletDB->findAsset(assetId);
+            if (info.is_initialized())
+            {
+                return info->m_LockHeight;
+            }
+        }
+        return 0;
     }
 
     void ShowAssetCoins(const IWalletDB::Ptr& walletDB, Asset::ID assetId)
     {
         const auto [unitName, nthName] = GetAssetNames(walletDB, assetId);
         const uint8_t idWidth = assetId == Asset::s_InvalidID ? 49 : 57;
+        const array<uint8_t, 7> columnWidths{{idWidth, 14, 14, 18, 20, 8, 8}};
 
-        const array<uint8_t, 6> columnWidths{{idWidth, 14, 14, 18, 20, 8}};
-        cout << boost::format(kCoinsTableHeadFormat)
-                 % boost::io::group(left, setw(columnWidths[0]), kCoinColumnId)
-                 % boost::io::group(right, setw(columnWidths[1]), unitName)
-                 % boost::io::group(right, setw(columnWidths[2]), nthName)
-                 % boost::io::group(left, setw(columnWidths[3]), kCoinColumnMaturity)
-                 % boost::io::group(left, setw(columnWidths[4]), kCoinColumnStatus)
-                 % boost::io::group(left, setw(columnWidths[5]), kCoinColumnType)
-                 << std::endl;
+        const auto lockHeight = GetAssetLockHeight(walletDB, assetId);
+        std::vector<Coin> reliable;
+        std::vector<Coin> unreliable;
 
-        walletDB->visitCoins([&columnWidths, &assetId](const Coin& c)->bool
-        {
-            if (c.m_ID.m_AssetID == assetId) {
-                cout << boost::format(kCoinsTableFormat)
-                        % boost::io::group(left, setw(columnWidths[0]), c.toStringID())
-                        % boost::io::group(right, setw(columnWidths[1]), c.m_ID.m_Value / Rules::Coin)
-                        % boost::io::group(right, setw(columnWidths[2]), c.m_ID.m_Value % Rules::Coin)
-                        % boost::io::group(left, setw(columnWidths[3]),
-                                           (c.IsMaturityValid() ? std::to_string(static_cast<int64_t>(c.m_maturity))
-                                                                : "-"))
-                        % boost::io::group(left, setw(columnWidths[4]), getCoinStatus(c.m_status))
-                        % boost::io::group(left, setw(columnWidths[5]), c.m_ID.m_Type)
-                     << std::endl;
+        walletDB->visitCoins([&](const Coin& c)->bool {
+            if (c.m_ID.m_AssetID == assetId)
+            {
+                if (c.m_confirmHeight < lockHeight)
+                {
+                    unreliable.push_back(c);
+                }
+                else
+                {
+                    reliable.push_back(c);
+                }
             }
             return true;
         });
 
-        cout << std::endl;
+        const auto displayCoins = [&](const std::vector<Coin>& coins) {
+            if (coins.empty())
+            {
+                return;
+            }
+            for(const auto& c: coins) {
+                 cout << boost::format(kCoinsTableFormat)
+                        % boost::io::group(left, setw(columnWidths[0]), c.toStringID())
+                        % boost::io::group(right, setw(columnWidths[1]), c.m_ID.m_Value / Rules::Coin)
+                        % boost::io::group(right, setw(columnWidths[2]), c.m_ID.m_Value % Rules::Coin)
+                        % boost::io::group(left, setw(columnWidths[3]),  (c.IsMaturityValid() ? std::to_string(static_cast<int64_t>(c.m_maturity)) : "-"))
+                        % boost::io::group(left, setw(columnWidths[4]), getCoinStatus(c.m_status))
+                        % boost::io::group(left, setw(columnWidths[5]), c.m_ID.m_Type)
+                        % boost::io::group(right, boolalpha, setw(columnWidths[6]), c.m_isUnlinked)
+                      << std::endl;
+            }
+        };
+
+        const bool hasCoins = !(reliable.empty() && unreliable.empty());
+        if (hasCoins)
+        {
+            cout << boost::format(kCoinsTableHeadFormat)
+                     % boost::io::group(left, setw(columnWidths[0]), kCoinColumnId)
+                     % boost::io::group(right, setw(columnWidths[1]), unitName)
+                     % boost::io::group(right, setw(columnWidths[2]), nthName)
+                     % boost::io::group(left, setw(columnWidths[3]), kCoinColumnMaturity)
+                     % boost::io::group(left, setw(columnWidths[4]), kCoinColumnStatus)
+                     % boost::io::group(left, setw(columnWidths[5]), kCoinColumnType)
+                     % boost::io::group(left, setw(columnWidths[6]), kCoinColumnIsUnlinked)
+                  << std::endl;
+
+            displayCoins(reliable);
+            if (!unreliable.empty())
+            {
+                cout << kTxHistoryUnreliableCoins;
+                displayCoins(unreliable);
+            }
+        }
+        else
+        {
+            cout << kNoCoins;
+        }
+
+        cout << endl;
     }
 
-    void ShowAssetTxs(const IWalletDB::Ptr& walletDB, Asset::ID assetId)
+    void ShowAssetTxs(const po::variables_map& vm, const IWalletDB::Ptr& walletDB, Asset::ID assetId)
     {
-        auto txHistory = walletDB->getTxHistory(TxType::AssetReg);
-        auto txIssue   = walletDB->getTxHistory(TxType::AssetIssue);
-        auto txConsume = walletDB->getTxHistory(TxType::AssetConsume);
-        auto txSimple  = walletDB->getTxHistory(TxType::Simple);
-        auto txUnreg   = walletDB->getTxHistory(TxType::AssetUnreg);
-        txHistory.insert(txHistory.end(), txIssue.begin(), txIssue.end());
-        txHistory.insert(txHistory.end(), txConsume.begin(), txConsume.end());
-        txHistory.insert(txHistory.end(), txSimple.begin(), txSimple.end());
-        txHistory.insert(txHistory.end(), txUnreg.begin(), txUnreg.end());
+        bool show = vm.count(cli::TX_HISTORY) || vm.count(cli::SHIELDED_TX_HISTORY);
+        if (!show) return;
+
+        std::vector<TxDescription> txHistory;
+
+        if (vm.count(cli::TX_HISTORY))
+        {
+            auto txSimple = walletDB->getTxHistory(TxType::Simple);
+            auto txReg = walletDB->getTxHistory(TxType::AssetReg);
+            auto txIssue = walletDB->getTxHistory(TxType::AssetIssue);
+            auto txConsume = walletDB->getTxHistory(TxType::AssetConsume);
+            auto txUnreg = walletDB->getTxHistory(TxType::AssetUnreg);
+            auto txInfo = walletDB->getTxHistory(TxType::AssetInfo);
+
+            if (assetId != Asset::s_InvalidID)
+            {
+                txHistory.insert(txHistory.end(), txSimple.begin(), txSimple.end());
+            }
+
+            txHistory.insert(txHistory.end(), txReg.begin(), txReg.end());
+            txHistory.insert(txHistory.end(), txIssue.begin(), txIssue.end());
+            txHistory.insert(txHistory.end(), txConsume.begin(), txConsume.end());
+            txHistory.insert(txHistory.end(), txUnreg.begin(), txUnreg.end());
+            txHistory.insert(txHistory.end(), txInfo.begin(), txInfo.end());
+        }
+
+        if (vm.count(cli::SHIELDED_TX_HISTORY))
+        {
+            // there cannot be 'orphaned' asset push/pull transactions but beam only, so skip in this case
+            if (assetId != Asset::s_InvalidID)
+            {
+                auto pushTxHistory = walletDB->getTxHistory(TxType::PushTransaction);
+                auto pullTxHistory = walletDB->getTxHistory(TxType::PullTransaction);
+                txHistory.insert(txHistory.end(), pushTxHistory.begin(), pushTxHistory.end());
+                txHistory.insert(txHistory.end(), pullTxHistory.begin(), pullTxHistory.end());
+            }
+        }
+
+        std::sort(txHistory.begin(), txHistory.end(), [](const TxDescription& a, const TxDescription& b) -> bool {
+            return a.m_createTime > b.m_createTime;
+        });
 
         txHistory.erase(std::remove_if(txHistory.begin(), txHistory.end(), [&assetId](const auto& tx) {
             return tx.m_assetId != assetId;
@@ -800,18 +927,23 @@ namespace
         if (txHistory.empty())
         {
             cout << kTxHistoryEmpty << endl;
-            return;
         }
-
-        if (!txHistory.empty())
+        else
         {
-            const auto [unitName, nthName] = GetAssetNames(walletDB, assetId);
+            const auto lockHeight = GetAssetLockHeight(walletDB, assetId);
+            auto [unitName, nthName] = GetAssetNames(walletDB, assetId);
+            if (assetId == Asset::s_InvalidID)
+            {
+                unitName = kAmountASSET;
+                nthName = kAmountAGROTH;
+            }
+
             boost::ignore_unused(nthName);
             const auto amountHeader = boost::format(kAssetTxHistoryColumnAmount) % unitName;
 
-            const array<uint8_t, 7> columnWidths{{20, 10, 17, 18, 16, 33, 65}};
+            const array<uint8_t, 7> columnWidths{{20, 10, 17, 18, 20, 33, 65}};
                 cout << boost::format(kAssetTxHistoryTableHead)
-                        % boost::io::group(left, setw(columnWidths[0]),  kTxHistoryColumnDatetTime)
+                        % boost::io::group(left,  setw(columnWidths[0]),  kTxHistoryColumnDatetTime)
                         % boost::io::group(left,  setw(columnWidths[1]),  kTxHistoryColumnHeight)
                         % boost::io::group(left,  setw(columnWidths[2]),  kTxHistoryColumnDirection)
                         % boost::io::group(right, setw(columnWidths[3]),  amountHeader)
@@ -820,24 +952,241 @@ namespace
                         % boost::io::group(left,  setw(columnWidths[6]),  kTxHistoryColumnKernelId)
                      << std::endl;
 
+            bool unreliableDisplayed = false;
             for (auto& tx : txHistory) {
-                auto direction = tx.m_selfTx || tx.m_txType == TxType::AssetIssue || tx.m_txType == TxType::AssetConsume ||
-                                 tx.m_txType == TxType::AssetReg || tx.m_txType == beam::wallet::TxType::AssetUnreg ?
-                                 kTxDirectionSelf : (tx.m_sender ? kTxDirectionOut : kTxDirectionIn);
+                std::string direction = tx.m_sender ? kTxDirectionOut : kTxDirectionIn;
+                if (tx.m_txType == TxType::AssetInfo || tx.m_txType == TxType::AssetReg || tx.m_txType == TxType::AssetUnreg ||
+                    tx.m_txType == TxType::AssetIssue || tx.m_txType == TxType::AssetConsume)
+                {
+                    direction = tx.getTxTypeString();
+                }
+                else if(tx.m_selfTx)
+                {
+                    direction = kTxDirectionSelf;
+                }
+
+                std::string amount = to_string(PrintableAmount(tx.m_amount, true));
+                if (tx.m_txType == TxType::AssetReg)
+                {
+                    amount += kBeamFee;
+                }
+                else if (tx.m_txType == TxType::AssetUnreg)
+                {
+                    amount += kBeamRefund;
+                }
+                else if (tx.m_txType == TxType::AssetInfo)
+                {
+                    amount = kNA;
+                }
+
+                std::string kernelId = to_string(tx.m_kernelID);
+                if (tx.m_txType == TxType::AssetInfo)
+                {
+                    kernelId = kNA;
+                }
+
+                Height height = storage::DeduceTxDisplayHeight(*walletDB, tx);
+                if (height < lockHeight && !unreliableDisplayed)
+                {
+                    unreliableDisplayed = true;
+                    cout << kTxHistoryUnreliableTxs;
+                }
+
+                auto statusInterpreter = walletDB->getStatusInterpreter(tx);
                 cout << boost::format(kTxHistoryTableFormat)
-                        % boost::io::group(left, setw(columnWidths[0]),  format_timestamp(kTimeStampFormat3x3, tx.m_createTime * 1000, false))
-                        % boost::io::group(left,  setw(columnWidths[1]),  std::to_string(static_cast<int64_t>(tx.m_minHeight)))
+                        % boost::io::group(left,  setw(columnWidths[0]),  format_timestamp(kTimeStampFormat3x3, tx.m_createTime * 1000, false))
+                        % boost::io::group(left,  setw(columnWidths[1]),  static_cast<int64_t>(height))
                         % boost::io::group(left,  setw(columnWidths[2]),  direction)
-                        % boost::io::group(right, setw(columnWidths[3]),  to_string(PrintableAmount(tx.m_amount, true)))
-                        % boost::io::group(left,  setw(columnWidths[4]),  getTxStatus(tx))
+                        % boost::io::group(right, setw(columnWidths[3]),  amount)
+                        % boost::io::group(left,  setw(columnWidths[4]),  statusInterpreter.getStatus())
                         % boost::io::group(left,  setw(columnWidths[5]),  to_hex(tx.m_txId.data(), tx.m_txId.size()))
-                        % boost::io::group(left,  setw(columnWidths[6]),  to_string(tx.m_kernelID))
+                        % boost::io::group(left,  setw(columnWidths[6]),  kernelId)
                      << std::endl;
             }
         }
     }
 
-    int ShowWalletInfo(const po::variables_map& vm)
+    void ShowShilededCoins(const po::variables_map& vm, IWalletDB::Ptr walletDB, Asset::ID assetId)
+    {
+        if (!vm.count(cli::SHIELDED_UTXOS))
+        {
+            return;
+        }
+
+        // TODO should implement
+        const char kShieldedCoinsTableHeadFormat[] = "  | %1% | %2% | %3% | %4% | %5% | %6% | %7% | %8% | %9% |";
+        const char kShieldedCreateTxID[]    = "createTxID";
+        const char kShieldedSpentTxID[]     = "spentTxID";
+        const char kShieldedConfirmHeight[] = "confirmHeight";
+        const char kShieldedSpentHeight[]   = "spentHeight";
+        const char kAnonymitySet[]          = "anonymitySet(approx)";
+        const char kTargetAnonymitySet[]    = "targetAnonymitySet";
+
+        auto shieldedCoins = walletDB->getShieldedCoins(assetId);
+        if (shieldedCoins.empty())
+        {
+            std::cout << kNoShieldedCoins << std::endl;
+            return;
+        }
+
+        const auto lockHeight = GetAssetLockHeight(walletDB, assetId);
+        auto [unitName, nthName] = GetAssetNames(walletDB, assetId);
+
+        std::vector<ShieldedCoin> reliable;
+        std::vector<ShieldedCoin> unreliable;
+
+        for (const auto& c: shieldedCoins) {
+            if (c.m_confirmHeight < lockHeight)
+            {
+                unreliable.push_back(c);
+            }
+            else
+            {
+                reliable.push_back(c);
+            }
+        }
+
+        const array<uint8_t, 9> columnWidths{ { 12, 10, 10, 32, 32, 13, 11, 20, 18} };
+        cout << "SHIELDED COINS\n\n"
+             << boost::format(kShieldedCoinsTableHeadFormat)
+                % boost::io::group(left, setw(columnWidths[0]),  kCoinColumnId)
+                % boost::io::group(right, setw(columnWidths[1]), unitName)
+                % boost::io::group(right, setw(columnWidths[2]), nthName)
+                % boost::io::group(right, setw(columnWidths[3]), kShieldedCreateTxID)
+                % boost::io::group(right, setw(columnWidths[4]), kShieldedSpentTxID)
+                % boost::io::group(right, setw(columnWidths[5]), kShieldedConfirmHeight)
+                % boost::io::group(right, setw(columnWidths[6]), kShieldedSpentHeight)
+                % boost::io::group(right, setw(columnWidths[7]), kAnonymitySet)
+                % boost::io::group(right, setw(columnWidths[8]), kTargetAnonymitySet)
+             << std::endl;
+
+        TxoID lastKnownShieldedOuts = 0;
+        storage::getVar(*walletDB, kStateSummaryShieldedOutsDBPath, lastKnownShieldedOuts);
+
+        const auto displayCoins = [&](const std::vector<ShieldedCoin>& coins) {
+            for (const auto& c : coins)
+            {
+                TxoID anonymitySetForCoin = lastKnownShieldedOuts && (lastKnownShieldedOuts > c.m_ID) ? lastKnownShieldedOuts - c.m_ID : 0;
+                cout << boost::format(kShieldedCoinsTableHeadFormat)
+                    % boost::io::group(left, setw(columnWidths[0]),  c.m_ID == ShieldedCoin::kTxoInvalidID ? "--" : std::to_string(c.m_ID))
+                    % boost::io::group(right, setw(columnWidths[1]), c.m_value / Rules::Coin)
+                    % boost::io::group(right, setw(columnWidths[2]), c.m_value % Rules::Coin)
+                    % boost::io::group(left, setw(columnWidths[3]),  c.m_createTxId ? to_hex(c.m_createTxId->data(), c.m_createTxId->size()) : "")
+                    % boost::io::group(left, setw(columnWidths[4]),  c.m_spentTxId ? to_hex(c.m_spentTxId->data(), c.m_spentTxId->size()) : "")
+                    % boost::io::group(right, setw(columnWidths[5]), (c.m_confirmHeight != MaxHeight) ? std::to_string(c.m_confirmHeight) : "--")
+                    % boost::io::group(right, setw(columnWidths[6]), (c.m_spentHeight != MaxHeight) ? std::to_string(c.m_spentHeight) : "--")
+                    % boost::io::group(right, setw(columnWidths[7]), (anonymitySetForCoin) ? std::to_string(anonymitySetForCoin) : "--")
+                    % boost::io::group(right, setw(columnWidths[8]), Rules::get().Shielded.m_ProofMax.get_N())
+                    << std::endl;
+            }
+        };
+
+        displayCoins(reliable);
+        if (!unreliable.empty())
+        {
+            cout << kTxHistoryUnreliableCoins;
+            displayCoins(unreliable);
+        }
+
+        cout << std::endl;
+    }
+
+    void ShowAssetsInfo(const po::variables_map& vm)
+    {
+        auto showAssetId = Asset::s_InvalidID;
+        if (vm.count(cli::ASSET_ID))
+        {
+            showAssetId = vm[cli::ASSET_ID].as<Positive<uint32_t>>().value;
+        }
+
+        auto walletDB = OpenDataBase(vm);
+        Block::SystemState::ID stateID = {};
+        walletDB->getSystemStateID(stateID);
+        storage::Totals totals(*walletDB);
+
+        const auto displayAsset = [&vm, &walletDB](const storage::Totals::AssetTotals &totals) {
+            cout << endl;
+            ShowAssetInfo(walletDB, totals);
+            ShowAssetCoins(walletDB, totals.AssetId);
+            ShowShilededCoins(vm, walletDB, totals.AssetId);
+            ShowAssetTxs(vm, walletDB, totals.AssetId);
+        };
+
+        if (showAssetId != Asset::s_InvalidID)
+        {
+            displayAsset(totals.GetTotals(showAssetId));
+        }
+        else
+        {
+            bool assetDisplayed = false;
+            for (auto it : totals.allTotals)
+            {
+                const auto assetId = it.second.AssetId;
+                if (assetId != Asset::s_InvalidID)
+                {
+                    displayAsset(it.second);
+                    assetDisplayed = true;
+                }
+            }
+
+            //
+            // Totals counts only coins. There might be transactions for assets
+            // that do not have coins. Also there might be asset transactions
+            // that have 0 asset id.
+            //
+            if (vm.count(cli::TX_HISTORY))
+            {
+                std::set<Asset::ID> noCoins;
+
+                const auto filter = [&](const std::vector<TxDescription> &vec) -> bool {
+                    bool orphans = false;
+                    for (const auto &tx: vec)
+                    {
+                        orphans = orphans || tx.m_assetId == Asset::s_InvalidID;
+                        if (!totals.HasTotals(tx.m_assetId))
+                        {
+                            noCoins.insert(tx.m_assetId);
+                        }
+                    }
+                    return orphans;
+                };
+
+                filter(walletDB->getTxHistory(TxType::Simple));
+                bool hasOrphaned = filter(walletDB->getTxHistory(TxType::AssetReg));
+                hasOrphaned = filter(walletDB->getTxHistory(TxType::AssetIssue)) || hasOrphaned;
+                hasOrphaned = filter(walletDB->getTxHistory(TxType::AssetConsume)) || hasOrphaned;
+                hasOrphaned = filter(walletDB->getTxHistory(TxType::AssetUnreg)) || hasOrphaned;
+                hasOrphaned = filter(walletDB->getTxHistory(TxType::AssetInfo)) || hasOrphaned;
+
+                for (auto assetId: noCoins)
+                {
+                    cout << endl << endl;
+                    displayAsset(totals.GetTotals(assetId));
+                    assetDisplayed = true;
+                }
+
+                if (hasOrphaned)
+                {
+                    cout << endl << endl << kOrphanedAseetTxs << endl;
+                    ShowAssetTxs(vm, walletDB, 0);
+                }
+
+                if (!assetDisplayed && !hasOrphaned)
+                {
+                    // if any asset without transaction has been displayed before
+                    // 'no transactions' message has been displayed as well.
+                    cout << kNoAssetTxsInWallet << endl;
+                }
+            }
+
+            if (!assetDisplayed)
+            {
+                cout << kNoAssetsInWallet << endl;
+            }
+        }
+    }
+
+    void ShowBEAMInfo(const po::variables_map& vm)
     {
         auto walletDB = OpenDataBase(vm);
         Block::SystemState::ID stateID = {};
@@ -845,8 +1194,8 @@ namespace
         storage::Totals totalsCalc(*walletDB);
 
         // Show info about BEAM
-        const auto& totals = totalsCalc.GetTotals(Zero);
-        const unsigned kWidth = 26; 
+        const auto& totals = totalsCalc.GetBeamTotals();
+        const unsigned kWidth = 26;
         cout << boost::format(kWalletSummaryFormat)
              % boost::io::group(left, setfill('.'), setw(kWidth), kWalletSummaryFieldCurHeight) % stateID.m_Height
              % boost::io::group(left, setfill('.'), setw(kWidth), kWalletSummaryFieldCurStateID) % stateID.m_Hash
@@ -859,47 +1208,65 @@ namespace
              % boost::io::group(left, setfill('.'), setw(kWidth), kWalletSummaryFieldAvaliableFee) % to_string(PrintableAmount(totals.AvailFee))
              % boost::io::group(left, setfill('.'), setw(kWidth), kWalletSummaryFieldTotalFee) % to_string(PrintableAmount(totals.Fee))
              % boost::io::group(left, setfill('.'), setw(kWidth), kWalletSummaryFieldTotalUnspent) % to_string(PrintableAmount(totals.Unspent));
-        ShowAssetCoins(walletDB, Zero);
 
-        if (vm.count(cli::TX_HISTORY))
+        ShowAssetCoins(walletDB, Zero);
+        ShowShilededCoins(vm, walletDB, Zero);
+
+        if (vm.count(cli::TX_HISTORY) || vm.count(cli::SHIELDED_TX_HISTORY))
         {
-            auto txHistory = walletDB->getTxHistory();
+            std::vector<TxDescription> txHistory;
+
+            if (vm.count(cli::TX_HISTORY))
+            {
+                auto simpleTxHistory = walletDB->getTxHistory();
+                txHistory.insert(txHistory.end(), simpleTxHistory.begin(), simpleTxHistory.end());
+            }
+
+            if (vm.count(cli::SHIELDED_TX_HISTORY))
+            {
+                auto pushTxHistory = walletDB->getTxHistory(TxType::PushTransaction);
+                auto pullTxHistory = walletDB->getTxHistory(TxType::PullTransaction);
+                txHistory.insert(txHistory.end(), pushTxHistory.begin(), pushTxHistory.end());
+                txHistory.insert(txHistory.end(), pullTxHistory.begin(), pullTxHistory.end());
+            }
+
             txHistory.erase(std::remove_if(txHistory.begin(), txHistory.end(), [](const auto& tx) {
                 return tx.m_assetId != 0;
             }), txHistory.end());
 
             if (txHistory.empty())
             {
-            cout << kTxHistoryEmpty << endl;
+                cout << kTxHistoryEmpty << endl;
             }
             else
             {
                 const array<uint8_t, 7> columnWidths{ {20, 17, 26, 21, 33, 65, 100} };
-            cout << boost::format(kTxHistoryTableHead)
-                % boost::io::group(left, setw(columnWidths[0]), kTxHistoryColumnDatetTime)
-                % boost::io::group(left, setw(columnWidths[1]), kTxHistoryColumnDirection)
-                % boost::io::group(right, setw(columnWidths[2]), kTxHistoryColumnAmount)
-                % boost::io::group(left, setw(columnWidths[3]), kTxHistoryColumnStatus)
-                % boost::io::group(left, setw(columnWidths[4]), kTxHistoryColumnId)
-                % boost::io::group(left, setw(columnWidths[5]), kTxHistoryColumnKernelId)
+                cout << boost::format(kTxHistoryTableHead)
+                    % boost::io::group(left, setw(columnWidths[0]), kTxHistoryColumnDatetTime)
+                    % boost::io::group(left, setw(columnWidths[1]), kTxHistoryColumnDirection)
+                    % boost::io::group(right, setw(columnWidths[2]), kTxHistoryColumnAmount)
+                    % boost::io::group(left, setw(columnWidths[3]), kTxHistoryColumnStatus)
+                    % boost::io::group(left, setw(columnWidths[4]), kTxHistoryColumnId)
+                    % boost::io::group(left, setw(columnWidths[5]), kTxHistoryColumnKernelId)
                     % boost::io::group(left, setw(columnWidths[6]), kTxToken)
-                << std::endl;
-
-            for (auto& tx : txHistory) {
-                cout << boost::format(kTxHistoryTableFormat)
-                    % boost::io::group(left, setw(columnWidths[0]),
-                        format_timestamp(kTimeStampFormat3x3, tx.m_createTime * 1000, false))
-                    % boost::io::group(left, setw(columnWidths[1]),
-                    (tx.m_selfTx ? kTxDirectionSelf : (tx.m_sender ? kTxDirectionOut
-                        : kTxDirectionIn)))
-                    % boost::io::group(right, setw(columnWidths[2]),
-                        to_string(PrintableAmount(tx.m_amount, true)))
-                    % boost::io::group(left, setw(columnWidths[3]), getTxStatus(tx))
-                    % boost::io::group(left, setw(columnWidths[4]), to_hex(tx.m_txId.data(), tx.m_txId.size()))
-                    % boost::io::group(left, setw(columnWidths[5]), to_string(tx.m_kernelID))
-                        % boost::io::group(left, setw(columnWidths[6]), tx.getToken())
                     << std::endl;
-            }
+
+                for (auto& tx : txHistory) {
+                    auto statusInterpreter = walletDB->getStatusInterpreter(tx);
+                    cout << boost::format(kTxHistoryTableFormat)
+                        % boost::io::group(left, setw(columnWidths[0]),
+                            format_timestamp(kTimeStampFormat3x3, tx.m_createTime * 1000, false))
+                        % boost::io::group(left, setw(columnWidths[1]),
+                        (tx.m_selfTx ? kTxDirectionSelf : (tx.m_sender ? kTxDirectionOut
+                            : kTxDirectionIn)))
+                        % boost::io::group(right, setw(columnWidths[2]),
+                            to_string(PrintableAmount(tx.m_amount, true)))
+                        % boost::io::group(left, setw(columnWidths[3]), statusInterpreter.getStatus())
+                        % boost::io::group(left, setw(columnWidths[4]), to_hex(tx.m_txId.data(), tx.m_txId.size()))
+                        % boost::io::group(left, setw(columnWidths[5]), to_string(tx.m_kernelID))
+                            % boost::io::group(left, setw(columnWidths[6]), tx.getToken())
+                        << std::endl;
+                }
             }
         }
 
@@ -938,6 +1305,7 @@ namespace
                     ss << (isBeamSide ? kBEAM : to_string(swapCoin)) << " <--> "
                         << (!isBeamSide ? kBEAM : to_string(swapCoin));
 
+                    auto statusInterpreter = walletDB->getStatusInterpreter(tx);
                     cout << boost::format(kSwapTxHistoryTableFormat)
                         % boost::io::group(left, setw(columnWidths[0]),
                             format_timestamp(kTimeStampFormat3x3, tx.m_createTime * 1000, false))
@@ -945,29 +1313,28 @@ namespace
                             to_string(PrintableAmount(tx.m_amount, true)))
                         % boost::io::group(right, setw(columnWidths[2]), swapAmount)
                         % boost::io::group(right, setw(columnWidths[3]), ss.str())
-                        % boost::io::group(left, setw(columnWidths[4]), getSwapTxStatus(walletDB, tx))
+                        % boost::io::group(left, setw(columnWidths[4]), statusInterpreter.getStatus())
                         % boost::io::group(left, setw(columnWidths[5]), to_hex(tx.m_txId.data(), tx.m_txId.size()))
                         << std::endl;
                 }
             }
         }
+    }
 
+    int ShowWalletInfo(const po::variables_map& vm)
+    {
         //
-        // Show info about assets
+        // If asset info is requested we show only it
+        // Otherwise we display both BEAM & ASSETS
         //
-        for (auto it : totalsCalc.allTotals) {
-            const auto assetId = it.second.AssetId;
-            if (assetId != 0) {
-                cout << endl;
-
-                ShowAssetInfo(walletDB, it.second);
-                ShowAssetCoins(walletDB, it.second.AssetId);
-
-                if (vm.count(cli::TX_HISTORY))
-                {
-                    ShowAssetTxs(walletDB, it.second.AssetId);
-                }
-            }
+        const bool showAssets = vm.count(cli::ASSETS) != 0 || vm.count(cli::ASSET_ID) != 0;
+        if (showAssets)
+        {
+            ShowAssetsInfo(vm);
+        }
+        else
+        {
+            ShowBEAMInfo(vm);
         }
 
         return 0;
@@ -1012,9 +1379,10 @@ namespace
             return -1;
         }
         auto token = tx->getToken();
+        auto statusInterpreter = walletDB->getStatusInterpreter(*tx);
         LOG_INFO()
             << boost::format(kTxDetailsFormat)
-                % storage::TxDetailsInfo(walletDB, *txId) % getTxStatus(*tx) 
+                % storage::TxDetailsInfo(walletDB, *txId) % statusInterpreter.getStatus()
             << (tx->m_status == TxStatus::Failed
                     ? boost::format(kTxDetailsFailReason) % GetFailureMessage(tx->m_failureReason)
                     : boost::format(""))
@@ -1250,6 +1618,91 @@ namespace
         return true;
     }
 
+    bool ReadAmount(const po::variables_map& vm, Amount& amount, const Amount& limit = std::numeric_limits<Amount>::max(), bool asset = false)
+    {
+        if (vm.count(cli::AMOUNT) == 0)
+        {
+            LOG_ERROR() << kErrorAmountMissing;
+            return false;
+        }
+
+        const auto strAmount = vm[cli::AMOUNT].as<std::string>();
+
+        try
+        {
+            boost::multiprecision::cpp_dec_float_50 preciseAmount(strAmount.c_str());
+            preciseAmount *= Rules::Coin;
+
+            if (preciseAmount == 0)
+            {
+                LOG_ERROR() << kErrorZeroAmount;
+                return false;
+            }
+
+            if (preciseAmount < 0)
+            {
+                LOG_ERROR() << (boost::format(kErrorNegativeAmount) % strAmount).str();
+                return false;
+            }
+
+            if (preciseAmount > limit)
+            {
+                std::stringstream ssLimit;
+                ssLimit << PrintableAmount(limit, false, asset ? kAmountASSET : "", asset ? kAmountAGROTH : "");
+                LOG_ERROR() << (boost::format(kErrorTooBigAmount) % strAmount % ssLimit.str()).str();
+                return false;
+            }
+
+             amount = preciseAmount.convert_to<Amount>();
+        }
+        catch(const std::runtime_error& err)
+        {
+            LOG_ERROR() << "the argument ('" << strAmount << "') for option '--amount' is invalid.";
+            LOG_ERROR() << err.what();
+            return false;
+        }
+
+        return true;
+    }
+
+    bool ReadFee(const po::variables_map& vm, Amount& fee, bool checkFee)
+    {
+        fee = vm[cli::FEE].as<Nonnegative<Amount>>().value;
+        if (checkFee && fee < cli::kMinimumFee)
+        {
+            LOG_ERROR() << kErrorFeeToLow;
+            return false;
+        }
+
+        return true;
+    }
+
+    bool ReadShieldedId(const po::variables_map& vm, TxoID& id)
+    {
+        if (vm.count(cli::SHIELDED_ID) == 0)
+        {
+            LOG_ERROR() << kErrorShieldedIDMissing;
+            return false;
+        }
+
+        id = vm[cli::SHIELDED_ID].as<Nonnegative<TxoID>>().value;
+
+        return true;
+    }
+
+    bool ReadWindowBegin(const po::variables_map& vm, TxoID& windowBegin)
+    {
+        if (vm.count(cli::WINDOW_BEGIN) == 0)
+        {
+            LOG_ERROR() << kErrorWindowBeginMissing;
+            return false;
+        }
+
+        windowBegin = vm[cli::WINDOW_BEGIN].as<Nonnegative<TxoID>>().value;
+
+        return true;
+    }
+
     bool LoadBaseParamsForTX(const po::variables_map& vm, Asset::ID& assetId, Amount& amount, Amount& fee, WalletID& receiverWalletID, bool checkFee, bool skipReceiverWalletID=false)
     {
         if (!skipReceiverWalletID)
@@ -1262,32 +1715,13 @@ namespace
             receiverWalletID = *params.GetParameter<WalletID>(TxParameterID::PeerID);
         }
 
-        if (vm.count(cli::AMOUNT) == 0)
+        if (!ReadAmount(vm, amount))
         {
-            LOG_ERROR() << kErrorAmountMissing;
             return false;
         }
 
-        auto signedAmount = vm[cli::AMOUNT].as<Positive<double>>().value;
-        if (signedAmount < 0)
+        if (!ReadFee(vm, fee, checkFee))
         {
-            LOG_ERROR() << kErrorNegativeAmount;
-            return false;
-        }
-
-        signedAmount *= Rules::Coin; // convert beams to groths
-
-        amount = static_cast<ECC::Amount>(std::round(signedAmount));
-        if (amount == 0)
-        {
-            LOG_ERROR() << kErrorZeroAmount;
-            return false;
-        }
-
-        fee = vm[cli::FEE].as<Nonnegative<Amount>>().value;
-        if (checkFee && fee < cli::kMinimumFee)
-        {
-            LOG_ERROR() << kErrorFeeToLow;
             return false;
         }
 
@@ -1828,6 +2262,29 @@ namespace
             throw std::runtime_error("Unsupported swap coin.");
         }
 
+#ifdef BEAM_LIB_VERSION
+        if (auto libVersion = swapTxParameters->GetParameter(beam::wallet::TxParameterID::LibraryVersion); libVersion)
+        {
+            std::string libVersionStr;
+            beam::wallet::fromByteBuffer(*libVersion, libVersionStr);
+            std::string myLibVersionStr = BEAM_LIB_VERSION;
+
+            std::regex libVersionRegex("\\d{1,}\\.\\d{1,}\\.\\d{4,}");
+            if (std::regex_match(libVersionStr, libVersionRegex) &&
+                std::lexicographical_compare(
+                    myLibVersionStr.begin(),
+                    myLibVersionStr.end(),
+                    libVersionStr.begin(),
+                    libVersionStr.end(),
+                    std::less<char>{}))
+            {
+                LOG_WARNING() <<
+                    "This token generated by newer Beam library version(" << libVersionStr << ")\n" <<
+                    "Your version is: " << myLibVersionStr << " Please, check for updates.";
+            }
+        }
+#endif  // BEAM_LIB_VERSION
+
         // display swap details to user
         cout << " Swap conditions: " << "\n"
             << " Beam side:    " << *isBeamSide << "\n"
@@ -1866,6 +2323,15 @@ namespace
         FillSwapFee(&(*swapTxParameters), fee, swapFeeRate, *isBeamSide);
 
         return wallet.StartTransaction(*swapTxParameters);
+    }
+
+    void RegisterLelantusTxCreators(Wallet& wallet, bool withAssets)
+    {
+        auto pushTxCreator = std::make_shared<lelantus::PushTransaction::Creator>(withAssets);
+        auto pullTxCreator = std::make_shared<lelantus::PullTransaction::Creator>(withAssets);
+
+        wallet.RegisterTransactionType(TxType::PushTransaction, std::static_pointer_cast<BaseTransaction::Creator>(pushTxCreator));
+        wallet.RegisterTransactionType(TxType::PullTransaction, std::static_pointer_cast<BaseTransaction::Creator>(pullTxCreator));
     }
 
     struct CliNodeConnection final : public proto::FlyClient::NetworkStd
@@ -1936,6 +2402,19 @@ namespace
         return nnet;
     }
 
+    void CheckAssetsAllowed(const po::variables_map& vm)
+    {
+        if (!Rules::get().CA.Enabled)
+        {
+            throw std::runtime_error(kErrorAssetsFork2);
+        }
+
+        if (!vm[cli::WITH_ASSETS].as<bool>())
+        {
+            throw std::runtime_error(kErrorAssetsDisabled);
+        }
+    }
+
     std::string ReadAssetMeta(const po::variables_map& vm)
     {
         if(!vm.count(cli::ASSET_METADATA))
@@ -1945,7 +2424,7 @@ namespace
 
         std::string strMeta = vm[cli::ASSET_METADATA].as<std::string>();
         if (strMeta.empty())
-    {
+        {
             throw std::runtime_error(kErrorAssetMetadataRequired);
         }
 
@@ -1956,7 +2435,7 @@ namespace
         }
 
         return strMeta;
-        }
+    }
 
     std::string AssetID2Meta(const po::variables_map& vm, IWalletDB::Ptr walletDB)
     {
@@ -1986,10 +2465,11 @@ namespace
         return meta;
     }
 
-    TxID IssueConsumeAsset(bool issue, const po::variables_map& vm, Wallet& wallet, IWalletDB::Ptr walletDB)
+    boost::optional<TxID> IssueConsumeAsset(bool issue, const po::variables_map& vm, Wallet& wallet, IWalletDB::Ptr walletDB)
     {
-        std::string meta;
+        CheckAssetsAllowed(vm);
 
+        std::string meta;
         if(vm.count(cli::ASSET_ID))
         {
             meta = AssetID2Meta(vm, walletDB);
@@ -2003,22 +2483,17 @@ namespace
             throw std::runtime_error(kErrorAssetIdOrMetaRequired);
         }
 
-        if (!vm.count(cli::AMOUNT))
+        Amount amountGroth = 0;
+        Amount limit = static_cast<Amount>(std::numeric_limits<AmountSigned>::max());
+        if(!ReadAmount(vm, amountGroth, limit, true))
         {
-            throw std::runtime_error(kErrorAmountMissing);
+            return boost::none;
         }
 
-        const auto cliAmount = vm[cli::AMOUNT].as<Positive<double>>().value;
-        const auto amountGroth = static_cast<ECC::Amount>(std::round(cliAmount * Rules::Coin));
-        if (amountGroth == 0)
+        Amount fee = 0;
+        if(!ReadFee(vm, fee, true))
         {
-            throw std::runtime_error(kErrorZeroAmount);
-        }
-
-        auto fee = vm[cli::FEE].as<Nonnegative<Amount>>().value;
-        if (fee < cli::kMinimumFee)
-        {
-            throw std::runtime_error(kErrorFeeToLow);
+            return boost::none;
         }
 
         auto params = CreateTransactionParameters(issue ? TxType::AssetIssue : TxType::AssetConsume)
@@ -2030,14 +2505,16 @@ namespace
         return wallet.StartTransaction(params);
     }
 
-    TxID RegisterAsset(const po::variables_map& vm, Wallet& wallet)
-        {
-        const auto strMeta = ReadAssetMeta(vm);
-        const auto fee = vm[cli::FEE].as<Nonnegative<Amount>>().value;
+    boost::optional<TxID> RegisterAsset(const po::variables_map& vm, Wallet& wallet)
+    {
+        CheckAssetsAllowed(vm);
 
-        if (fee < cli::kMinimumFee)
+        const auto strMeta = ReadAssetMeta(vm);
+
+        Amount fee = 0;
+        if (!ReadFee(vm, fee, true))
         {
-            throw std::runtime_error(kErrorFeeToLow);
+            return boost::none;
         }
 
         auto params = CreateTransactionParameters(TxType::AssetReg)
@@ -2049,10 +2526,11 @@ namespace
         return wallet.StartTransaction(params);
     }
 
-    TxID UnregisterAsset(const po::variables_map& vm, Wallet& wallet, IWalletDB::Ptr walletDB)
+    boost::optional<TxID> UnregisterAsset(const po::variables_map& vm, Wallet& wallet, IWalletDB::Ptr walletDB)
     {
-        std::string meta;
+        CheckAssetsAllowed(vm);
 
+        std::string meta;
         if(vm.count(cli::ASSET_ID))
         {
             meta = AssetID2Meta(vm, walletDB);
@@ -2062,16 +2540,15 @@ namespace
             meta = ReadAssetMeta(vm);
         }
         else
-            {
+        {
             throw std::runtime_error(kErrorAssetIdOrMetaRequired);
-            }
+        }
 
-        auto fee = vm[cli::FEE].as<Nonnegative<Amount>>().value;
-        if (fee < cli::kMinimumFee)
-            {
-            LOG_ERROR() << "Test: " << kErrorFeeToLow;
-            throw std::runtime_error(kErrorFeeToLow);
-            }
+        Amount fee = 0;
+        if (!ReadFee(vm, fee, true))
+        {
+            return boost::none;
+        }
 
         auto params = CreateTransactionParameters(TxType::AssetUnreg)
                         .SetParameter(TxParameterID::Amount, Rules::get().CA.DepositForList)
@@ -2084,21 +2561,22 @@ namespace
 
     TxID GetAssetInfo(const po::variables_map& vm, Wallet& wallet)
     {
+        CheckAssetsAllowed(vm);
+
+        auto params = CreateTransactionParameters(TxType::AssetInfo);
         if (vm.count(cli::ASSET_ID))
         {
-        Asset::ID aid = vm[cli::ASSET_ID].as<Positive<uint32_t>>().value;
-        auto params = CreateTransactionParameters(TxType::AssetInfo)
-                        .SetParameter(TxParameterID::AssetID, aid);
+            Asset::ID aid = vm[cli::ASSET_ID].as<Positive<uint32_t>>().value;
+            params.SetParameter(TxParameterID::AssetID, aid);
             return wallet.StartTransaction(params);
         }
 
         if (vm.count(cli::ASSET_METADATA))
         {
             const auto assetMeta = ReadAssetMeta(vm);
-            auto params = CreateTransactionParameters(TxType::AssetInfo)
-                          .SetParameter(TxParameterID::AssetMetadata, assetMeta);
-        return wallet.StartTransaction(params);
-    }
+            params.SetParameter(TxParameterID::AssetMetadata, assetMeta);
+            return wallet.StartTransaction(params);
+        }
 
         throw std::runtime_error(kErrorAssetIdOrMetaRequired);
     }
@@ -2171,21 +2649,26 @@ namespace
             io::Reactor::get_Current().stop();
         };
 
-        auto txCompletedAction = isServer
-            ? Wallet::TxCompletedAction()
-            : onTxCompleteAction;
+        const auto withAssets = vm[cli::WITH_ASSETS].as<bool>();
+        auto txCompletedAction = isServer ? Wallet::TxCompletedAction() : onTxCompleteAction;
 
-        Wallet wallet{ walletDB,
-                       std::move(txCompletedAction),
-                       Wallet::UpdateCompletedAction() };
+        Wallet wallet{walletDB, withAssets,
+                      std::move(txCompletedAction),
+                      Wallet::UpdateCompletedAction()};
         {
             wallet::AsyncContextHolder holder(wallet);
 
+#ifdef BEAM_LELANTUS_SUPPORT
+            RegisterLelantusTxCreators(wallet, withAssets);
+#endif
 #ifdef BEAM_ATOMIC_SWAP_SUPPORT
             RegisterSwapTxCreators(wallet, walletDB);
 #endif  // BEAM_ATOMIC_SWAP_SUPPORT
 #ifdef BEAM_CONFIDENTIAL_ASSETS_SUPPORT
-            RegisterAssetCreators(wallet);
+           if (Rules::get().CA.Enabled && withAssets)
+            {
+                RegisterAssetCreators(wallet);
+            }
 #endif  // BEAM_CONFIDENTIAL_ASSETS_SUPPORT
             wallet.ResumeAllTransactions();
 
@@ -2221,6 +2704,12 @@ namespace
                 {
                     return -1;
                 }
+
+                if (assetId != Asset::s_InvalidID)
+                {
+                    CheckAssetsAllowed(vm);
+                }
+
                 WalletAddress senderAddress = GenerateNewAddress(walletDB, "");
                 auto params = CreateSimpleTransactionParameters();
                 LoadReceiverParams(vm, params);
@@ -2313,8 +2802,8 @@ namespace
                         wallet.CancelTransaction(*txId);
                         return 0;
                     }
-                    
-                    LOG_ERROR() << kErrorCancelTxInInvalidStatus << (tx->m_txType == wallet::TxType::AtomicSwap ? beam::getSwapTxStatus(walletDB, *tx) : beam::getTxStatus(*tx));
+                    auto statusInterpreter = walletDB->getStatusInterpreter(*tx);
+                    LOG_ERROR() << kErrorCancelTxInInvalidStatus << statusInterpreter.getStatus();
                     return -1;
                 }
                 LOG_ERROR() << kErrorTxIdUnknown;
@@ -2359,7 +2848,7 @@ namespace
         return DoWalletFunc(vm, [](auto&& vm, auto&& wallet, auto&& walletDB, auto& currentTxID, bool isFork1)
             {
                 currentTxID = IssueConsumeAsset(true, vm, wallet, walletDB);
-                return 0;
+                return currentTxID ? 0 : -1;
             });
     }
 
@@ -2368,7 +2857,7 @@ namespace
         return DoWalletFunc(vm, [](auto&& vm, auto&& wallet, auto&& walletDB, auto& currentTxID, bool isFork1)
             {
                 currentTxID = IssueConsumeAsset(false, vm, wallet, walletDB);
-                return 0;
+                return currentTxID ? 0 : -1;
             });
     }
 
@@ -2377,7 +2866,7 @@ namespace
         return DoWalletFunc(vm, [](auto&& vm, auto&& wallet, auto&& walletDB, auto& currentTxID, bool isFork1)
             {
                 currentTxID = RegisterAsset(vm, wallet);
-                return 0;
+                return currentTxID ? 0 : -1;
             });
     }
 
@@ -2386,7 +2875,7 @@ namespace
         return DoWalletFunc(vm, [](auto&& vm, auto&& wallet, auto&& walletDB, auto& currentTxID, bool isFork1)
             {
                 currentTxID = UnregisterAsset(vm, wallet, walletDB);
-                return 0;
+                return currentTxID ? 0 : -1;
             });
     }
 
@@ -2395,9 +2884,123 @@ namespace
         return DoWalletFunc(vm, [](auto&& vm, auto&& wallet, auto&& walletDB, auto& currentTxID, bool isFork1)
             {
                 currentTxID = GetAssetInfo(vm, wallet);
-                return 0;
+                return currentTxID ? 0: -1;
             });
     }
+
+    boost::optional<TxID> InsertToShieldedPool(const po::variables_map& vm, Wallet& wallet, IWalletDB::Ptr walletDB)
+    {
+        Amount amount = 0;
+        Amount fee = 0;
+        if (!ReadAmount(vm, amount) || !ReadFee(vm, fee, true))
+        {
+            return boost::none;
+        }
+
+        if (fee < kShieldedTxMinFeeInGroth)
+        {
+            LOG_ERROR() << "Fee is too small. Minimal fee is " << PrintableAmount(kShieldedTxMinFeeInGroth);
+            return boost::none;
+        }
+
+        const Amount pushTxMinAmount = kShieldedTxMinFeeInGroth + 1;
+        if (amount < pushTxMinAmount)
+        {
+            LOG_ERROR() << "Amount is too small. Minimal amount is " << PrintableAmount(pushTxMinAmount);
+            return boost::none;
+        }
+
+        Asset::ID assetId = Asset::s_InvalidID;
+        if(vm.count(cli::ASSET_ID)) // asset id can be zero if beam only
+        {
+            CheckAssetsAllowed(vm);
+            assetId = vm[cli::ASSET_ID].as<Positive<uint32_t> >().value;
+        }
+
+        WalletAddress senderAddress = GenerateNewAddress(walletDB, "");
+        auto txParams = lelantus::CreatePushTransactionParameters(senderAddress.m_walletID);
+        LoadReceiverParams(vm, txParams);
+
+        txParams.SetParameter(TxParameterID::Amount, amount)
+                .SetParameter(TxParameterID::Fee, fee)
+                .SetParameter(TxParameterID::AssetID, assetId);
+
+        return wallet.StartTransaction(txParams);
+    }
+
+    int InsertToShieldedPool(const po::variables_map& vm)
+    {
+        return DoWalletFunc(vm, [](auto&& vm, auto&& wallet, auto&& walletDB, auto& currentTxID, bool isFork1)
+            {
+                currentTxID = InsertToShieldedPool(vm, wallet, walletDB);
+                return currentTxID ? 0: -1;
+            });
+    }
+
+    boost::optional<TxID> ExtractFromShieldedPool(const po::variables_map& vm, Wallet& wallet, IWalletDB::Ptr walletDB)
+    {
+        TxoID shieldedId = 0;
+        Amount fee = 0;
+
+        if (!ReadFee(vm, fee, true) || !ReadShieldedId(vm, shieldedId))
+        {
+            return boost::none;
+        }
+
+        if (fee < kShieldedTxMinFeeInGroth)
+        {
+            LOG_ERROR () << "Fee is too small. Minimal fee is " << PrintableAmount(kShieldedTxMinFeeInGroth);
+            return boost::none;
+        }
+
+        auto shieldedCoin = walletDB->getShieldedCoin(shieldedId);
+        if (!shieldedCoin)
+        {
+            LOG_ERROR () << "Is not shielded UTXO id: " << shieldedId;
+            return boost::none;
+        }
+
+        const bool isAsset = shieldedCoin->m_assetID != Asset::s_InvalidID;
+        if (isAsset)
+        {
+            CheckAssetsAllowed(vm);
+        }
+        else
+        {
+            // BEAM
+            if (shieldedCoin->m_value <= fee)
+            {
+                LOG_ERROR() << "Shielded UTXO amount less or equal fee.";
+                return boost::none;
+            }
+        }
+
+        WalletAddress senderAddress = GenerateNewAddress(walletDB, "");
+
+        auto txParams = lelantus::CreatePullTransactionParameters(senderAddress.m_walletID)
+            // TODO check this param
+            .SetParameter(TxParameterID::Amount, isAsset ? shieldedCoin->m_value : shieldedCoin->m_value - fee)
+            .SetParameter(TxParameterID::Fee, fee)
+            .SetParameter(TxParameterID::AssetID, shieldedCoin->m_assetID)
+            .SetParameter(TxParameterID::ShieldedOutputId, shieldedId);
+
+        if (TxoID windowBegin = 0; ReadWindowBegin(vm, windowBegin))
+        {
+            txParams.SetParameter(TxParameterID::WindowBegin, windowBegin);
+        }
+
+        return wallet.StartTransaction(txParams);
+    }
+
+    int ExtractFromShieldedPool(const po::variables_map& vm)
+    {
+        return DoWalletFunc(vm, [](auto&& vm, auto&& wallet, auto&& walletDB, auto& currentTxID, bool isFork1)
+            {
+                currentTxID = ExtractFromShieldedPool(vm, wallet, walletDB);
+                return currentTxID ? 0: -1;
+            });
+    }
+
 }  // namespace
 
 io::Reactor::Ptr reactor;
@@ -2473,17 +3076,13 @@ int main_impl(int argc, char* argv[])
             po::notify(vm);
 
             unsigned logCleanupPeriod = vm[cli::LOG_CLEANUP_DAYS].as<uint32_t>() * 24 * 3600;
-
             clean_old_logfiles(LOG_FILES_DIR, LOG_FILES_PREFIX, logCleanupPeriod);
-
             Rules::get().UpdateChecksum();
 
             {
                 reactor = io::Reactor::create();
                 io::Reactor::Scope scope(*reactor);
-
                 io::Reactor::GracefulIntHandler gih(*reactor);
-
                 LogRotation logRotation(*reactor, LOG_ROTATION_PERIOD_SEC, logCleanupPeriod);
 
                 if (vm.count(cli::COMMAND) == 0)
@@ -2531,6 +3130,8 @@ int main_impl(int argc, char* argv[])
                     {cli::ASSET_REGISTER,       RegisterAsset},
                     {cli::ASSET_UNREGISTER,     UnregisterAsset},
                     {cli::ASSET_INFO,           GetAssetInfo},
+                    {cli::INSERT_TO_POOL,       InsertToShieldedPool},
+                    {cli::EXTRACT_FROM_POOL,    ExtractFromShieldedPool}
                 };
 
                 auto cit = find_if(begin(commands), end(commands), [&command](auto& p) {return p.first == command; });

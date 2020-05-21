@@ -13,7 +13,8 @@
 // limitations under the License.
 #include "assets_utils.h"
 #include "wallet/core/common.h"
-#include "logger.h"
+#include "wallet/core/strings_resources.h"
+#include "utility/logger.h"
 #include <regex>
 #include <set>
 
@@ -25,6 +26,7 @@ namespace beam::wallet {
         const char SHORT_NAME_KEY[]    = "SN";
         const char UNIT_NAME_KEY[]     = "UN";
         const char NTH_UNIT_NAME_KEY[] = "NTHUN";
+        const char ALLOWED_SYMBOLS[]   = " .,-_";
     }
 
     WalletAssetMeta::WalletAssetMeta(std::string meta)
@@ -68,23 +70,47 @@ namespace beam::wallet {
         for(const auto& it: tokens)
         {
             auto eq = it.find_first_of('=');
-            if (!eq) continue;
+            if (eq == std::string::npos) continue;
             auto key = std::string(it.begin(), it.begin() + eq);
             auto val = std::string(it.begin() + eq + 1, it.end());
             _values[key] = val;
         }
 
-        _std = _values.find(NAME_KEY) != _values.end() &&
-               _values.find(SHORT_NAME_KEY) != _values.end() &&
-               _values.find(UNIT_NAME_KEY) != _values.end() &&
-               _values.find(NTH_UNIT_NAME_KEY) != _values.end();
+        const auto fieldValid = [&](const char* name) -> bool {
+            const auto it = _values.find(name);
+            if (it == _values.end()) return false;
+
+            return std::all_of(it->second.begin(), it->second.end(), [](const char ch) -> bool {
+                return std::isalnum(ch, std::locale::classic()) || std::string(" .,-_").find(ch) != std::string::npos;
+            });
+        };
+
+        _std = fieldValid(NAME_KEY) &&
+               fieldValid(SHORT_NAME_KEY) &&
+               fieldValid(UNIT_NAME_KEY) &&
+               fieldValid(NTH_UNIT_NAME_KEY);
     }
 
-    void WalletAssetMeta::LogInfo(const std::string& prefix) const
+    void WalletAssetMeta::LogInfo(const std::string& pref) const
     {
+        const auto prefix = pref.empty() ? pref : pref + " ";
+        const auto isPrintable = [](const std::string& str) -> bool {
+            std::locale loc("");
+            return std::all_of(str.begin(), str.end(), [&loc](const char ch) -> bool {
+                return std::isprint(ch, loc);
+            });
+        };
+
         for(const auto& it: _values)
         {
-            LOG_INFO() << prefix << it.first << "=" << it.second;
+            std::string value = it.second;
+            if (!isPrintable(value))
+            {
+                std::stringstream  ss;
+                ss << "[CANNOT BE PRINTED, size is " << value.size() << " bytes]";
+                value = ss.str();
+            }
+            LOG_INFO() << prefix << it.first << "=" << value;
         }
     }
 
@@ -116,4 +142,46 @@ namespace beam::wallet {
         const auto it = _values.find(SHORT_NAME_KEY);
         return it != _values.end() ? it->second : std::string();
     }
+
+    WalletAsset::WalletAsset(const Asset::Full& full, Height refreshHeight)
+        : Asset::Full(full)
+        , m_RefreshHeight(refreshHeight)
+    {
+    }
+
+    bool WalletAsset::CanRollback(Height from) const
+    {
+        const auto maxRollback = Rules::get().MaxRollback;
+        return m_LockHeight + maxRollback > from;
+    }
+
+    void WalletAsset::LogInfo(const std::string& pref) const
+    {
+        const auto prefix = pref.empty() ? pref : pref + " ";
+
+        LOG_INFO() << prefix << "Asset ID: "       << m_ID;
+        LOG_INFO() << prefix << "Owner ID: "       << m_Owner;
+        LOG_INFO() << prefix << "Issued amount: "  << PrintableAmount(m_Value, false, kAmountASSET, kAmountAGROTH);
+        LOG_INFO() << prefix << "Lock Height: "    << m_LockHeight;
+        LOG_INFO() << prefix << "Refresh height: " << m_RefreshHeight;
+        LOG_INFO() << prefix << "Metadata size: "  << m_Metadata.m_Value.size() << " bytes";
+
+        const WalletAssetMeta meta(*this);
+        meta.LogInfo(pref + "\t");
+
+        if(m_IsOwned)
+        {
+            LOG_INFO() << prefix << "You own this asset";
+        }
+    }
+
+    void WalletAsset::LogInfo(const TxID& txId, const SubTxID& subTxId) const
+    {
+        std::stringstream ss;
+        ss << txId << "[" << subTxId << "]";
+        const auto prefix = ss.str();
+        LogInfo(prefix);
+    }
 }
+
+

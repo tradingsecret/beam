@@ -66,14 +66,30 @@ namespace beam::wallet
         m_activeNotifications[type] = onOff;
     }
 
-    size_t NotificationCenter::getUnreadCount() const
+    size_t NotificationCenter::getUnreadCount(VersionInfo::Application app, const Version& currentAppVersion) const
     {
+        // TODO: #1414 change to use WalletImplVerInfo
         return std::count_if(m_cache.begin(), m_cache.end(),
-            [](const auto& p)
+            [app, &currentAppVersion](const auto& p)
             {
-                return p.second.m_state == Notification::State::Unread 
-                    && (p.second.m_type == Notification::Type::SoftwareUpdateAvailable 
-                        || p.second.m_type == Notification::Type::TransactionFailed);
+                if (p.second.m_state == Notification::State::Unread)
+                {
+                    if (p.second.m_type == Notification::Type::SoftwareUpdateAvailable)
+                    {
+                        VersionInfo info;
+                        if (fromByteBuffer(p.second.m_content, info) &&
+                            app == VersionInfo::Application::DesktopWallet &&
+                            currentAppVersion < info.m_version)
+                        {
+                            return true;
+                        }
+                    }
+                    if (p.second.m_type == Notification::Type::TransactionFailed)
+                    {
+                        return true;
+                    }
+                }
+                return false;
             });
     }
 
@@ -151,8 +167,6 @@ namespace beam::wallet
 
     void NotificationCenter::onNewWalletVersion(const VersionInfo& content, const ECC::uintBig& id)
     {
-        if (content.m_application != VersionInfo::Application::DesktopWallet) return;
-        
         auto search = m_cache.find(id);
         if (search == m_cache.cend())
         {
@@ -167,12 +181,42 @@ namespace beam::wallet
         }
     }
 
+    void NotificationCenter::onNewWalletVersion(const WalletImplVerInfo& content, const ECC::uintBig& id)
+    {
+        auto search = m_cache.find(id);
+        if (search == m_cache.cend())
+        {
+            createNotification(
+                Notification {
+                    id,
+                    Notification::Type::WalletImplUpdateAvailable,
+                    Notification::State::Unread,
+                    getTimestamp(),
+                    toByteBuffer(content)
+                });
+        }
+    }
+
     void NotificationCenter::onTransactionChanged(ChangeAction action, const std::vector<TxDescription>& items)
     {
         if (action == ChangeAction::Added || action == ChangeAction::Updated)
         {
             for (const auto& item : items)
             {
+                Asset::ID assetId = Asset::s_InvalidID;
+                if (item.GetParameter(TxParameterID::AssetID, assetId))
+                {
+                    if (assetId != Asset::s_BeamID)
+                    {
+                        // GUI wallet doesn't support asset transactions at the moment
+                        // So we just block all asset-related notifications.
+                        // The only way to get asset-based tx in GUI when somebody
+                        // sends asset. Such transactions would automatically fail
+                        // and we do not want notifications about them
+                        continue;
+                    }
+                }
+
                 bool failed = (item.m_status == TxStatus::Failed || item.m_status == TxStatus::Canceled);
                 if (!failed && item.m_status != TxStatus::Completed)
                 {

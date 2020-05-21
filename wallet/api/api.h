@@ -43,6 +43,8 @@ namespace beam::wallet
     macro(-32009, SwapFailToAcceptOwnOffer,  "Can't accept own swap offer.")     \
     macro(-32010, SwapNotEnoughtBeams,       "Not enought beams.")               \
     macro(-32011, SwapFailToConnect,         "Doesn't have active connection.")  \
+    macro(-32012, DatabaseError,             "Database error")                   \
+    macro(-32013, DatabaseNotFound,          "Database not found")               \
 
     enum ApiError
     {
@@ -77,7 +79,7 @@ namespace beam::wallet
     macro(Send,               "tx_send",              API_WRITE_ACCESS)   \
     macro(Issue,              "tx_asset_issue",       API_WRITE_ACCESS)   \
     macro(Consume,            "tx_asset_consume",     API_WRITE_ACCESS)   \
-    macro(AssetInfo,          "tx_asset_info",        API_WRITE_ACCESS)   \
+    macro(TxAssetInfo,        "tx_asset_info",        API_WRITE_ACCESS)   \
     macro(Status,             "tx_status",            API_READ_ACCESS)    \
     macro(Split,              "tx_split",             API_WRITE_ACCESS)   \
     macro(TxCancel,           "tx_cancel",            API_WRITE_ACCESS)   \
@@ -295,6 +297,7 @@ namespace beam::wallet
         boost::optional<WalletID> from;
         boost::optional<uint64_t> session;
         boost::optional<TxID> txId;
+        boost::optional<Asset::ID> assetId;
         WalletID address;
         std::string comment;
         TxParameters txParameters;
@@ -309,7 +312,7 @@ namespace beam::wallet
     {
         Amount value = 0;
         Amount fee = kMinFeeInGroth;
-        boost::optional<std::string> meta;
+        boost::optional<std::string> assetMeta;
         boost::optional<Asset::ID> assetId;
         boost::optional<CoinIDList> coins;
         boost::optional<uint64_t> session;
@@ -325,7 +328,7 @@ namespace beam::wallet
     {
         Amount value = 0;
         Amount fee = kMinFeeInGroth;
-        boost::optional<std::string> meta;
+        boost::optional<std::string> assetMeta;
         boost::optional<Asset::ID> assetId;
         boost::optional<CoinIDList> coins;
         boost::optional<uint64_t> session;
@@ -337,9 +340,9 @@ namespace beam::wallet
         };
     };
 
-    struct AssetInfo
+    struct TxAssetInfo
     {
-        boost::optional<std::string> meta;
+        boost::optional<std::string> assetMeta;
         boost::optional<Asset::ID> assetId;
         boost::optional<TxID> txId;
 
@@ -356,7 +359,7 @@ namespace beam::wallet
         struct Response
         {
             TxDescription tx;
-            Height kernelProofHeight;
+            Height txHeight;
             Height systemHeight;
             uint64_t confirmations;
         };
@@ -367,6 +370,7 @@ namespace beam::wallet
         Amount fee = kMinFeeInGroth;
         AmountList coins;
         boost::optional<TxID> txId;
+        boost::optional<Asset::ID> assetId;
 
         struct Response
         {
@@ -399,6 +403,12 @@ namespace beam::wallet
     {
         int count = 0;
         int skip = 0;
+        bool withAssets = false;
+
+        struct
+        {
+            boost::optional<Asset::ID> assetId;
+        } filter;
 
         struct Response
         {
@@ -429,10 +439,13 @@ namespace beam::wallet
 
     struct TxList
     {
+        bool withAssets = false;
+
         struct
         {
-            boost::optional<TxStatus> status;
-            boost::optional<Height> height;
+            boost::optional<TxStatus>  status;
+            boost::optional<Height>    height;
+            boost::optional<Asset::ID> assetId;
         } filter;
 
         int count = 0;
@@ -446,16 +459,18 @@ namespace beam::wallet
 
     struct WalletStatus
     {
+        bool withAssets = false;
         struct Response
         {
             beam::Height currentHeight = 0;
             Merkle::Hash currentStateHash;
             Merkle::Hash prevStateHash;
+            double difficulty = 0;
             Amount available = 0;
             Amount receiving = 0;
             Amount sending = 0;
             Amount maturing = 0;
-            double difficulty = 0;
+            boost::optional<storage::Totals> totals;
         };
     };
 
@@ -488,7 +503,7 @@ namespace beam::wallet
 
     struct GetAssetInfo
     {
-        boost::optional<std::string> meta;
+        boost::optional<std::string> assetMeta;
         boost::optional<Asset::ID> assetId;
         struct Response
         {
@@ -556,7 +571,7 @@ namespace beam::wallet
     class WalletApi : public Api
     {
     public:
-        WalletApi(IWalletApiHandler& handler, ACL acl = boost::none);
+        WalletApi(IWalletApiHandler& handler, bool withAssets, ACL acl = boost::none);
 
 #define RESPONSE_FUNC(api, name, _) \
         void getResponse(const JsonRpcId& id, const api::Response& data, json& msg);
@@ -577,5 +592,9 @@ namespace beam::wallet
 
         template<typename T>
         void onIssueConsumeMessage(bool issue, const JsonRpcId& id, const json& params);
+        void checkCAEnabled(const JsonRpcId& id);
+
+    private:
+        bool m_withAssets = false;
     };
 }  // namespace beam::wallet

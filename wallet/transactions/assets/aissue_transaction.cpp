@@ -64,16 +64,15 @@ namespace beam::wallet
     AssetIssueTransaction::AssetIssueTransaction(bool issue, INegotiatorGateway& gateway
                                         , IWalletDB::Ptr walletDB
                                         , const TxID& txID)
-        : BaseTransaction{ gateway, std::move(walletDB), txID}
+        : AssetTransaction{ gateway, std::move(walletDB), txID}
         , _issue(issue)
     {
     }
 
     void AssetIssueTransaction::UpdateImpl()
     {
-        if (!IsLoopbackTransaction())
+        if(!AssetTransaction::BaseUpdate())
         {
-            OnFailed(TxFailureReason::NotLoopback, true);
             return;
         }
 
@@ -94,7 +93,8 @@ namespace beam::wallet
             if (const auto info = m_WalletDB->findAsset(builder.GetAssetOwnerId()))
             {
                 SetParameter(TxParameterID::AssetID, info->m_ID);
-                SetParameter(TxParameterID::AssetFullInfo, *info);
+                SetParameter(TxParameterID::AssetInfoFull, static_cast<Asset::Full>(*info));
+                SetParameter(TxParameterID::AssetConfirmedHeight, info->m_RefreshHeight);
                 SetState(State::AssetCheck);
             }
             else
@@ -108,27 +108,29 @@ namespace beam::wallet
 
         if (GetState() == State::AssetConfirm)
         {
-            Height auHeight = 0, acHeight = 0;
+            Height auHeight = 0;
             GetParameter(TxParameterID::AssetUnconfirmedHeight, auHeight);
-            GetParameter(TxParameterID::AssetConfirmedHeight, acHeight);
-            if (auHeight || !acHeight)
+            if (auHeight)
             {
                 OnFailed(TxFailureReason::AssetConfirmFailed);
                 return;
             }
+
+            Height acHeight = 0;
+            GetParameter(TxParameterID::AssetConfirmedHeight, acHeight);
+            if (!acHeight)
+            {
+                ConfirmAsset();
+                return;
+            }
+
             SetState(State::AssetCheck);
         }
 
         if (GetState() == State::AssetCheck)
         {
             Asset::Full info;
-            if (!GetParameter(TxParameterID::AssetFullInfo, info))
-            {
-                OnFailed(TxFailureReason::NoAssetInfo, true);
-                return;
-            }
-
-            if (!info.IsValid())
+            if (!GetParameter(TxParameterID::AssetInfoFull, info) || !info.IsValid())
             {
                 OnFailed(TxFailureReason::NoAssetInfo, true);
                 return;
@@ -168,11 +170,6 @@ namespace beam::wallet
         uint8_t nRegistered = proto::TxStatus::Unspecified;
         if (!GetParameter(TxParameterID::TransactionRegistered, nRegistered))
         {
-            if (CheckExpired())
-            {
-                return;
-            }
-
             auto transaction = builder.CreateTransaction();
             TxBase::Context::Params params;
 			TxBase::Context ctx(params);
@@ -231,11 +228,6 @@ namespace beam::wallet
     void AssetIssueTransaction::ConfirmAsset()
     {
         GetGateway().confirm_asset(GetTxID(), _builder->GetAssetOwnerId(), kDefaultSubTxID);
-    }
-
-    bool AssetIssueTransaction::IsLoopbackTransaction() const
-    {
-        return GetMandatoryParameter<bool>(TxParameterID::IsSender) && IsInitiator();
     }
 
     bool AssetIssueTransaction::ShouldNotifyAboutChanges(TxParameterID paramID) const

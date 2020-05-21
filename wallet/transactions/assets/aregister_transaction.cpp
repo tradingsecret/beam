@@ -15,9 +15,9 @@
 #include "aregister_transaction.h"
 #include "aissue_tx_builder.h"
 #include "core/block_crypt.h"
-#include "utility/logger.h"
 #include "wallet/core/strings_resources.h"
 #include "wallet/core/wallet.h"
+#include "utility/logger.h"
 
 namespace beam::wallet
 {
@@ -57,15 +57,14 @@ namespace beam::wallet
     }
 
     AssetRegisterTransaction::AssetRegisterTransaction(INegotiatorGateway& gateway, IWalletDB::Ptr walletDB, const TxID& txID)
-        : BaseTransaction{gateway, std::move(walletDB), txID}
+        : AssetTransaction(gateway, std::move(walletDB), txID)
     {
     }
 
     void AssetRegisterTransaction::UpdateImpl()
     {
-        if (!IsLoopbackTransaction())
+        if (!AssetTransaction::BaseUpdate())
         {
-            OnFailed(TxFailureReason::NotLoopback, true);
             return;
         }
 
@@ -95,11 +94,6 @@ namespace beam::wallet
             if(const auto ainfo = m_WalletDB->findAsset(builder.GetAssetOwnerId()))
             {
                 OnFailed(TxFailureReason::AssetExists);
-                return;
-            }
-
-            if (CheckExpired())
-            {
                 return;
             }
 
@@ -138,7 +132,6 @@ namespace beam::wallet
         {
             LOG_INFO() << GetTxID() << " Asset with the owner ID " << _builder->GetAssetOwnerId() << " successfully registered";
             SetState(State::AssetConfirmation);
-            // TODO:ASSETS consider running in separate transaction to not rollback if confirm failed
             ConfirmAsset();
             return;
         }
@@ -160,6 +153,26 @@ namespace beam::wallet
                 ConfirmAsset();
                 return;
             }
+
+            SetState(State::AssetCheck);
+        }
+
+        if(GetState() == State::AssetCheck)
+        {
+            Asset::Full info;
+            if (!GetParameter(TxParameterID::AssetInfoFull, info) || !info.IsValid())
+            {
+                OnFailed(TxFailureReason::NoAssetInfo, true);
+                return;
+            }
+
+            if(_builder->GetAssetOwnerId() != info.m_Owner)
+            {
+                OnFailed(TxFailureReason::InvalidAssetOwnerId, true);
+                return;
+            }
+
+            SetParameter(TxParameterID::AssetID, info.m_ID);
         }
 
         SetState(State::Finalizing);
@@ -184,26 +197,6 @@ namespace beam::wallet
     void AssetRegisterTransaction::ConfirmAsset()
     {
         GetGateway().confirm_asset(GetTxID(), _builder->GetAssetOwnerId(), kDefaultSubTxID);
-    }
-
-    bool AssetRegisterTransaction::Rollback(Height height)
-    {
-        bool rthis = false;
-        Height cheight(0);
-        if (GetParameter(TxParameterID::AssetConfirmedHeight, cheight) && (cheight > height))
-        {
-            SetParameter(TxParameterID::AssetConfirmedHeight, Height(0));
-            SetParameter(TxParameterID::AssetUnconfirmedHeight, Height(0));
-            SetParameter(TxParameterID::AssetFullInfo, Asset::Full());
-            rthis = true;
-        }
-        const bool rsuper = super::Rollback(height);
-        return rthis || rsuper;
-    }
-
-    bool AssetRegisterTransaction::IsLoopbackTransaction() const
-    {
-        return GetMandatoryParameter<bool>(TxParameterID::IsSender) && IsInitiator();
     }
 
     bool AssetRegisterTransaction::ShouldNotifyAboutChanges(TxParameterID paramID) const
