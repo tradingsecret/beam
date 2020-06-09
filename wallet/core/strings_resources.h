@@ -154,6 +154,7 @@ namespace beam
     extern const char kWalletAssetNameFormat[];
     extern const char kWalletAssetLockHeightFormat[];
     extern const char kWalletAssetRefreshHeightFormat[];
+    extern const char kWalletAssetEmissionFormat[];
     extern const char kWalletAssetOwnerFormat[];
     extern const char kWalletSummaryFieldCurHeight[];
     extern const char kWalletSummaryFieldCurStateID[];
@@ -166,6 +167,7 @@ namespace beam
     extern const char kWalletSummaryFieldAvaliableFee[];
     extern const char kWalletSummaryFieldTotalFee[];
     extern const char kWalletSummaryFieldTotalUnspent[];
+    extern const char kWalletSummaryFieldShielded[];
     extern const char kCoinsTableHeadFormat[];
     extern const char kCoinColumnId[];
     extern const char kCoinColumnMaturity[];
@@ -175,7 +177,6 @@ namespace beam
     extern const char kCoinsTableFormat[];
     // Tx history
     extern const char kTxHistoryTableHead[];
-    extern const char kAssetTxHistoryTableHead[];
     extern const char kTxHistoryTableFormat[];
     extern const char kTxHistoryColumnDatetTime[];
     extern const char kTxHistoryColumnHeight[];

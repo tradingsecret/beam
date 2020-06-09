@@ -210,6 +210,7 @@ private:
 		void OnNewState() override;
 		void OnRolledBack() override;
 		void OnModified() override;
+		void OnFastSyncSucceeded() override;
 		void get_ViewerKeys(ViewerKeys&) override;
 		void OnEvent(Height, const proto::Event::Base&) override;
 		void OnDummy(const CoinID&, Height) override;
@@ -219,7 +220,6 @@ private:
 		struct MyExecutorMT
 			:public ExecutorMT
 		{
-			virtual uint32_t get_Threads() override;
 			virtual void RunThread(uint32_t) override;
 
 			~MyExecutorMT() { Stop(); }
@@ -270,6 +270,8 @@ private:
 		uint32_t m_nCount;
 		uint32_t m_TimeAssigned_ms;
 		NodeDB::StateID m_sidTrg;
+		Height m_h0; // those 2 are fast-sync params at the moment of task assignment
+		Height m_hTxoLo;
 		Peer* m_pOwner;
 
 		bool operator < (const Task& t) const { return (m_Key < t.m_Key); }
@@ -463,6 +465,7 @@ private:
 			static const uint16_t PiRcvd		= 0x002;
 			static const uint16_t Owner			= 0x004;
 			static const uint16_t Probe			= 0x008;
+			static const uint16_t SerifSent		= 0x010;
 			static const uint16_t Finalizing	= 0x080;
 			static const uint16_t HasTreasury	= 0x100;
 			static const uint16_t Chocking		= 0x200;
@@ -503,6 +506,7 @@ private:
 		void BroadcastTxs();
 		void BroadcastBbs();
 		void BroadcastBbs(Bbs::Subscription&);
+		void MaybeSendSerif();
 		void OnChocking();
 		void SetTxCursor(TxPool::Fluff::Element*);
 		bool GetBlock(proto::BodyBuffers&, const NodeDB::StateID&, const proto::GetBodyPack&, bool bActive);
@@ -511,6 +515,7 @@ private:
 		bool ShouldAssignTasks();
 		bool ShouldFinalizeMining();
 		Task& get_FirstTask();
+		bool ShouldAcceptBodyPack();
 		void OnFirstTaskDone();
 		void OnFirstTaskDone(NodeProcessor::DataStatus::Enum);
 		void ModifyRatingWrtData(size_t nSize);

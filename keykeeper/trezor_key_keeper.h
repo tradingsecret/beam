@@ -31,14 +31,14 @@ namespace beam::wallet
     {
         using MessageHandler = std::function<void()>;
     public:
-        TrezorKeyKeeperProxy(std::shared_ptr<DeviceManager> deviceManager);
+        TrezorKeyKeeperProxy(std::shared_ptr<DeviceManager> deviceManager, HWWallet::IHandler::Ptr uiHandler = {});
         virtual ~TrezorKeyKeeperProxy() = default;
     private:
         Status::Type InvokeSync(Method::get_Kdf& m) override;
         Status::Type InvokeSync(Method::get_NumSlots& m) override;
 
 #define THE_MACRO(method) \
-		void InvokeAsync(Method::method& m, const Handler::Ptr& pHandler) override;
+        void InvokeAsync(Method::method& m, const Handler::Ptr& pHandler) override;
 
         KEY_KEEPER_METHODS(THE_MACRO)
 #undef THE_MACRO
@@ -84,5 +84,13 @@ namespace beam::wallet
 
         struct CreateOutputCtx;
         void PushOut1(Task::Ptr& p);
+
+        void PushHandler(const Handler::Ptr& handler);
+        void PopHandler();
+        void ShowUI();
+        void HideUI();
+
+        std::queue<Handler::Ptr> m_Handlers;
+        HWWallet::IHandler::Ptr m_UIHandler;
     };
 }

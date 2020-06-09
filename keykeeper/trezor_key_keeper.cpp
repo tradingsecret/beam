@@ -40,6 +40,96 @@ namespace beam::wallet
 
     namespace
     {
+        std::string Hex(const std::string& s)
+        {
+            return "0x" + s;
+        }
+        void DumpSenderParameters(const IPrivateKeyKeeper2::Method::SignSender& m)
+        {
+            using namespace nlohmann;
+            auto res = json
+            {
+                {"tx_common", 
+                    {
+                        {"inputs", json::array()},
+                    
+                        {"outputs", json::array()},
+                                 
+                        {"offset_sk", Hex(ECC::Scalar(m.m_kOffset).str())},
+                        {"kernel_parameters",
+                            {
+                                {"fee", m.m_pKernel->m_Fee},
+                                {"min_height", m.m_pKernel->m_Height.m_Min},
+                                {"max_height", m.m_pKernel->m_Height.m_Max},
+                                {"commitment",
+                                    {
+                                        {"x", Hex(m.m_pKernel->m_Commitment.m_X.str())},
+                                        {"y", m.m_pKernel->m_Commitment.m_Y}
+                                    }
+                                },
+                                {"signature",
+                                    {
+                                        {"nonce_pub",
+                                            {
+                                                {"x", Hex(m.m_pKernel->m_Signature.m_NoncePub.m_X.str())},
+                                                {"y", m.m_pKernel->m_Signature.m_NoncePub.m_Y}
+                                            }
+                                        },
+                                        {"k", Hex(m.m_pKernel->m_Signature.m_k.str())}
+                                    },
+                                    
+                                }
+                            }
+                        }
+                    },
+                },
+                {"tx_mutual_info",
+                    {
+                        {"peer", Hex(m.m_Peer.str())},
+                        {"wallet_identity_key", m.m_MyIDKey},
+                        {"payment_proof_signature",
+                            {
+                                {"nonce_pub",
+                                    {
+                                        {"x", Hex(m.m_PaymentProofSignature.m_NoncePub.m_X.str())},
+                                        {"y", m.m_PaymentProofSignature.m_NoncePub.m_Y}
+                                    }
+                                },
+                                {"k", Hex(m.m_PaymentProofSignature.m_k.str())}
+                            },
+                        },
+                    }
+                },
+
+                {"nonce_slot", m.m_Slot},
+                {"user_agreement", Hex(m.m_UserAgreement.str())}
+            };
+
+            auto f = [](json& j, const std::vector<CoinID>& coins)
+            {
+                for (const auto& c : coins)
+                {
+                    j.push_back(
+                         {
+                            {"idx", c.m_Idx},
+                            {"type", int(c.m_Type)},
+                            {"sub_idx", c.m_SubIdx},
+                            {"amount", c.m_Value},
+                            {"asset_id", c.m_AssetID}
+                        }
+                    );
+                }
+            };
+            
+            f(res["tx_common"]["outputs"], m.m_vOutputs);
+            f(res["tx_common"]["inputs"], m.m_vInputs);
+
+           
+            
+            std::cout << std::endl << res.dump() << std::endl;
+        }
+
+
         BeamCrypto_UintBig& Ecc2BC(const ECC::uintBig& x)
         {
             static_assert(sizeof(x) == sizeof(BeamCrypto_UintBig));
@@ -78,17 +168,15 @@ namespace beam::wallet
         {
             v.m_Inputs.resize(m.m_vInputs.size());
             v.m_Outputs.resize(m.m_vOutputs.size());
-            if (!v.m_Inputs.empty() && !v.m_Outputs.empty())
-            {
-                for (size_t i = 0; i < v.m_Inputs.size(); ++i)
-                    CidCvt(v.m_Inputs[i], m.m_vInputs[i]);
 
-                for (size_t i = 0; i < v.m_Outputs.size(); ++i)
-                    CidCvt(v.m_Outputs[i], m.m_vOutputs[i]);
-        
-                tx2.m_pIns = &v.m_Inputs;
-                tx2.m_pOuts = &v.m_Outputs;
-            }
+            for (size_t i = 0; i < v.m_Inputs.size(); ++i)
+                CidCvt(v.m_Inputs[i], m.m_vInputs[i]);
+
+            for (size_t i = 0; i < v.m_Outputs.size(); ++i)
+                CidCvt(v.m_Outputs[i], m.m_vOutputs[i]);
+
+            tx2.m_pIns = &v.m_Inputs;
+            tx2.m_pOuts = &v.m_Outputs;
         
             // kernel
             assert(m.m_pKernel);
@@ -136,9 +224,9 @@ namespace beam::wallet
         {
             // kernel
             assert(m.m_pKernel);
-            m.m_pKernel->m_Fee = tx2.m_Krn.m_Fee;
-            m.m_pKernel->m_Height.m_Min = tx2.m_Krn.m_hMin;
-            m.m_pKernel->m_Height.m_Max = tx2.m_Krn.m_hMax;
+            //m.m_pKernel->m_Fee = tx2.m_Krn.m_Fee;
+            //m.m_pKernel->m_Height.m_Min = tx2.m_Krn.m_hMin;
+            //m.m_pKernel->m_Height.m_Max = tx2.m_Krn.m_hMax;
 
             Ecc2BC(m.m_pKernel->m_Commitment) = tx2.m_Krn.m_Commitment;
             Ecc2BC(m.m_pKernel->m_Signature.m_NoncePub) = tx2.m_Krn.m_Signature.m_NoncePub;
@@ -153,6 +241,8 @@ namespace beam::wallet
         }
     }
 
+    ///////////
+    // Cache
     void TrezorKeyKeeperProxy::Cache::ShrinkMru(uint32_t nCount)
     {
         while (m_mruPKdfs.size() > nCount)
@@ -226,10 +316,24 @@ namespace beam::wallet
         }
     }
 
-    TrezorKeyKeeperProxy::TrezorKeyKeeperProxy(std::shared_ptr<DeviceManager> deviceManager)
+    //////////
+    // TrezorKeyKeeperProxy
+    TrezorKeyKeeperProxy::TrezorKeyKeeperProxy(std::shared_ptr<DeviceManager> deviceManager, HWWallet::IHandler::Ptr uiHandler)
         : m_DeviceManager(deviceManager)
+        , m_UIHandler(uiHandler)
     {
         EnsureEvtOut();
+        deviceManager->callback_Failure([&](const Message& msg, std::string session, size_t queue_size)
+        {
+            auto message = child_cast<Message, Failure>(msg).message();
+
+            if (m_Handlers.empty())
+            {
+                return;
+            }
+            PushOut(Status::Unspecified, m_Handlers.front());
+            m_Handlers.pop();
+        });
     }
 
     IPrivateKeyKeeper2::Status::Type TrezorKeyKeeperProxy::InvokeSync(Method::get_Kdf& m)
@@ -242,8 +346,17 @@ namespace beam::wallet
 
     void TrezorKeyKeeperProxy::InvokeAsync(Method::get_Kdf& m, const Handler::Ptr& h)
     {
-        m_DeviceManager->call_BeamGetPKdf(m.m_Root, m.m_iChild, true, [this, &m, h](const Message& msg, std::string session, size_t queue_size)
+        if (m.m_Root)
         {
+            m.m_iChild = 0; // with another value we will get "Firmware error"
+        }
+        PushHandler(h);
+        ShowUI();
+        m_DeviceManager->call_BeamGetPKdf(m.m_Root, m.m_iChild, false, 
+            [this, &m, h](const Message& msg, std::string session, size_t queue_size)
+        {
+            HideUI();
+            PopHandler();
             const BeamPKdf& beamKdf = child_cast<Message, BeamPKdf>(msg);
             typedef struct
             {
@@ -294,8 +407,11 @@ namespace beam::wallet
 
     void TrezorKeyKeeperProxy::InvokeAsync(Method::get_NumSlots& m, const Handler::Ptr& h)
     {
-        m_DeviceManager->call_BeamGetNumSlots(true, [this, &m, h](const Message& msg, std::string session, size_t queue_size)
+        PushHandler(h);
+        m_DeviceManager->call_BeamGetNumSlots(false, 
+            [this, &m, h](const Message& msg, std::string session, size_t queue_size)
         {
+            PopHandler();
             m.m_Count = child_cast<Message, BeamNumSlots>(msg).num_slots();
 
             if (m.m_Count)
@@ -361,13 +477,8 @@ namespace beam::wallet
         };
 
         // TaskFin
-        virtual void Execute(Task::Ptr&) override;
+        void Execute(Task::Ptr&) override;
     };
-
-    void TrezorKeyKeeperProxy::PushOut1(Task::Ptr& p)
-    {
-        PrivateKeyKeeper_WithMarshaller::PushOut(p);
-    }
 
     void TrezorKeyKeeperProxy::CreateOutputCtx::Proceed1(Ptr& p)
     {
@@ -469,9 +580,11 @@ namespace beam::wallet
         };
 
         AutoMovePtr amp(std::move(p));
+        m_This.PushHandler(amp.m_p->m_pHandler);
         m_This.m_DeviceManager->call_BeamGenerateRangeproof(&cid, &pt0, &pt1, nullptr, nullptr, 
             [this, amp](const Message& msg, std::string session, size_t queue_size)
         {
+            m_This.PopHandler();
             const BeamRangeproofData& brpd = child_cast<Message, BeamRangeproofData>(msg);
 
             if (!brpd.is_successful())
@@ -481,8 +594,7 @@ namespace beam::wallet
             }
 
             ECC::Scalar::Native tauX;
-            tauX.get_Raw() = ConvertResultTo<secp256k1_scalar>(brpd.data_taux());
-            m_pRes->m_pConfidential->m_Part3.m_TauX = tauX;
+            m_pRes->m_pConfidential->m_Part3.m_TauX = ConvertResultTo<ECC::Scalar>(brpd.data_taux());
 
             BeamCrypto_CompactPoint bccp;
             TxExport(bccp, brpd.pt0());
@@ -530,8 +642,11 @@ namespace beam::wallet
         txMutualInfo.m_MyIDKey = m.m_MyIDKey;
         txMutualInfo.m_Peer = Ecc2BC(m.m_Peer);
 
-        m_DeviceManager->call_BeamSignTransactionReceive(txCommon, txMutualInfo, [this, &m, h, txCommon](const Message& msg, std::string session, size_t queue_size) mutable
+        PushHandler(h);
+        m_DeviceManager->call_BeamSignTransactionReceive(txCommon, txMutualInfo, 
+            [this, &m, h, txCommon](const Message& msg, std::string session, size_t queue_size) mutable
         {
+            PopHandler();
             const auto& txReceive = child_cast<Message, BeamSignTransactionReceive>(msg);
             TxExport(txCommon, txReceive.tx_common());
             BeamCrypto_Signature proofSignature;
@@ -560,8 +675,14 @@ namespace beam::wallet
         txSenderParams.m_iSlot = m.m_Slot;
         txSenderParams.m_UserAgreement = Ecc2BC(m.m_UserAgreement);
 
-        m_DeviceManager->call_BeamSignTransactionSend(txCommon, txMutualInfo, txSenderParams, [this, &m, h, txCommon](const Message& msg, std::string session, size_t queue_size) mutable
+        PushHandler(h);
+        ShowUI();
+        DumpSenderParameters(m);
+        m_DeviceManager->call_BeamSignTransactionSend(txCommon, txMutualInfo, txSenderParams,
+            [this, &m, h, txCommon](const Message& msg, std::string session, size_t queue_size) mutable
         {
+            HideUI();
+            PopHandler();
             TxExport(txCommon, child_cast<Message, BeamSignTransactionSend>(msg).tx_common());
             BeamCrypto_UintBig userAgreement = ConvertResultTo<BeamCrypto_UintBig>(child_cast<Message, BeamSignTransactionSend>(msg).user_agreement());
 
@@ -577,12 +698,51 @@ namespace beam::wallet
         Vectors v;
         TxImport(txCommon, m, v);
 
-        m_DeviceManager->call_BeamSignTransactionSplit(txCommon, [this, &m, h, txCommon](const Message& msg, std::string session, size_t queue_size) mutable
+        PushHandler(h);
+        ShowUI();
+        m_DeviceManager->call_BeamSignTransactionSplit(txCommon,
+            [this, &m, h, txCommon](const Message& msg, std::string session, size_t queue_size) mutable
         {
+            HideUI();
+            PopHandler();
             TxExport(txCommon, child_cast<Message, BeamSignTransactionSplit>(msg).tx_common());
             TxExport(m, txCommon);
             PushOut(Status::Success, h);
         });
     }
 
+    void TrezorKeyKeeperProxy::PushOut1(Task::Ptr& p)
+    {
+        PrivateKeyKeeper_WithMarshaller::PushOut(p);
+    }
+
+    void TrezorKeyKeeperProxy::PushHandler(const Handler::Ptr& handler)
+    {
+        m_Handlers.push(handler);
+    }
+
+    void TrezorKeyKeeperProxy::PopHandler()
+    {
+        assert(!m_Handlers.empty());
+        if (!m_Handlers.empty())
+        {
+            m_Handlers.pop();
+        }
+    }
+
+    void TrezorKeyKeeperProxy::ShowUI()
+    {
+        if (m_UIHandler)
+        {
+            m_UIHandler->ShowKeyKeeperMessage();
+        }
+    }
+
+    void TrezorKeyKeeperProxy::HideUI()
+    {
+        if (m_UIHandler)
+        {
+            m_UIHandler->HideKeyKeeperMessage();
+        }
+    }
 }

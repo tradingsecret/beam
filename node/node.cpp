@@ -401,6 +401,9 @@ bool Node::TryAssignTask(Task& t, Peer& p)
 
 		t.m_nCount = std::min(static_cast<uint32_t>(msg.m_CountExtra), m_Cfg.m_BandwidthCtl.m_MaxBodyPackCount) + 1; // just an estimate, the actual num of blocks can be smaller
 		m_nTasksPackBody += t.m_nCount;
+
+        t.m_h0 = m_Processor.m_SyncData.m_h0;
+        t.m_hTxoLo = m_Processor.m_SyncData.m_TxoLo;
 	}
 	else
 	{
@@ -615,6 +618,24 @@ void Node::Processor::OnNewState()
 	get_ParentObj().MaybeGenerateRecovery();
 }
 
+void Node::Processor::OnFastSyncSucceeded()
+{
+    // update Events serif
+    ECC::Hash::Value hv;
+    Blob blob(hv);
+    if (!get_DB().ParamGet(NodeDB::ParamID::EventsSerif, nullptr, &blob))
+        return; //?!
+
+    get_DB().ParamSet(NodeDB::ParamID::EventsSerif, &m_Extra.m_TxoHi, &blob);
+
+    for (PeerList::iterator it = get_ParentObj().m_lstPeers.begin(); get_ParentObj().m_lstPeers.end() != it; it++)
+    {
+        Peer& peer = *it;
+        peer.m_Flags &= ~Peer::Flags::SerifSent;
+        peer.MaybeSendSerif();
+    }
+}
+
 void Node::MaybeGenerateRecovery()
 {
 	if (!m_PostStartSynced || m_Cfg.m_Recovery.m_sPathOutput.empty() || !m_Cfg.m_Recovery.m_Granularity)
@@ -687,18 +708,6 @@ void Node::Processor::OnRolledBack()
 	IObserver* pObserver = get_ParentObj().m_Cfg.m_Observer;
 	if (pObserver)
 		pObserver->OnRolledBack(m_Cursor.m_ID);
-}
-
-uint32_t Node::Processor::MyExecutorMT::get_Threads()
-{
-	Config& cfg = get_ParentObj().get_ParentObj().m_Cfg; // alias
-
-	if (cfg.m_VerificationThreads < 0)
-		// use all the cores, don't subtract 'mining threads'. Verification has higher priority
-		cfg.m_VerificationThreads = std::thread::hardware_concurrency();
-
-	uint32_t nThreads = cfg.m_VerificationThreads;
-	return std::max(nThreads, 1U);
 }
 
 void Node::Processor::MyExecutorMT::RunThread(uint32_t iThread)
@@ -857,6 +866,12 @@ void Node::Keys::SetSingleKey(const Key::IKdf::Ptr& pKdf)
 
 void Node::Initialize(IExternalPOW* externalPOW)
 {
+    if (m_Cfg.m_VerificationThreads < 0)
+        // use all the cores, don't subtract 'mining threads'. Verification has higher priority
+        m_Cfg.m_VerificationThreads = m_Processor.m_ExecutorMT.get_Threads();
+
+    m_Processor.m_ExecutorMT.set_Threads(std::max<uint32_t>(m_Cfg.m_VerificationThreads, 1U));
+
     m_Processor.m_Horizon = m_Cfg.m_Horizon;
     m_Processor.Initialize(m_Cfg.m_sPathLocal.c_str(), m_Cfg.m_ProcessorParams);
 
@@ -994,15 +1009,24 @@ void Node::RefreshOwnedUtxos()
 	hp >> hv0;
 
 	Blob blob(hv1);
-	m_Processor.get_DB().ParamGet(NodeDB::ParamID::DummyID, NULL, &blob);
+	m_Processor.get_DB().ParamGet(NodeDB::ParamID::EventsOwnerID, NULL, &blob);
 
-	if (hv0 == hv1)
-		return; // unchanged
+    bool bChanged = (hv0 != hv1);
+    if (bChanged)
+    {
+        // changed
+        m_Processor.RescanOwnedTxos();
 
-	m_Processor.RescanOwnedTxos();
+        blob = Blob(hv0);
+        m_Processor.get_DB().ParamSet(NodeDB::ParamID::EventsOwnerID, NULL, &blob);
+    }
 
-	blob = Blob(hv0);
-	m_Processor.get_DB().ParamSet(NodeDB::ParamID::DummyID, NULL, &blob);
+    if (bChanged || !m_Processor.get_DB().ParamGet(NodeDB::ParamID::EventsSerif, nullptr, &blob))
+    {
+        hv0 = NextNonce();
+        blob = Blob(hv0);
+        m_Processor.get_DB().ParamSet(NodeDB::ParamID::EventsSerif, &m_Processor.m_Extra.m_TxoHi, &blob);
+    }
 }
 
 bool Node::Bbs::IsInLimits() const
@@ -1205,6 +1229,8 @@ void Node::Peer::OnMsg(proto::Authentication&& msg)
 			ProvePKdfObscured(*pOwner, proto::IDType::Viewer);
 		}
 	}
+
+    MaybeSendSerif();
 
     if (proto::IDType::Node != msg.m_IDType)
         return;
@@ -1925,6 +1951,13 @@ bool Node::Peer::GetBlock(proto::BodyBuffers& out, const NodeDB::StateID& sid, c
 	return true;
 }
 
+bool Node::Peer::ShouldAcceptBodyPack()
+{
+    Task& t = get_FirstTask();
+    const NodeProcessor::SyncData& d = m_This.m_Processor.m_SyncData; // alias
+    return (t.m_h0 == d.m_h0) && (t.m_hTxoLo == d.m_TxoLo);
+}
+
 void Node::Peer::OnMsg(proto::Body&& msg)
 {
 	Task& t = get_FirstTask();
@@ -1940,7 +1973,9 @@ void Node::Peer::OnMsg(proto::Body&& msg)
 	Processor& p = m_This.m_Processor; // alias
 
 	NodeProcessor::DataStatus::Enum eStatus = h ?
-		p.OnBlock(id, msg.m_Body.m_Perishable, msg.m_Body.m_Eternal, m_pInfo->m_ID.m_Key) :
+        ShouldAcceptBodyPack() ?
+		    p.OnBlock(id, msg.m_Body.m_Perishable, msg.m_Body.m_Eternal, m_pInfo->m_ID.m_Key) :
+            NodeProcessor::DataStatus::Rejected :
 		p.OnTreasury(msg.m_Body.m_Eternal);
 
 	p.TryGoUpAsync();
@@ -1973,7 +2008,7 @@ void Node::Peer::OnMsg(proto::BodyPack&& msg)
 	ModifyRatingWrtData(nSize);
 
 	NodeProcessor::DataStatus::Enum eStatus = NodeProcessor::DataStatus::Rejected;
-	if (!msg.m_Bodies.empty())
+	if (!msg.m_Bodies.empty() && ShouldAcceptBodyPack())
 	{
 		const uint64_t* pPtr = p.get_CachedRows(t.m_sidTrg, hCountExtra);
 		if (pPtr)
@@ -2642,6 +2677,7 @@ void Node::Peer::OnLogin(proto::Login&& msg)
 	}
 
     m_LoginFlags = msg.m_Flags;
+    MaybeSendSerif();
 
 	if (b != ShouldFinalizeMining()) {
 		// stupid compiler insists on parentheses!
@@ -2750,6 +2786,23 @@ void Node::Peer::BroadcastBbs()
 	}
 
 	m_CursorBbs = wlk.m_ID;
+}
+
+void Node::Peer::MaybeSendSerif()
+{
+    if (!(Flags::Viewer & m_Flags) || (Flags::SerifSent & m_Flags))
+        return;
+
+    if (proto::LoginFlags::Extension::get(m_LoginFlags) < 5)
+        return;
+
+    proto::EventsSerif msg;
+
+    Blob blob(msg.m_Value);
+    m_This.m_Processor.get_DB().ParamGet(NodeDB::ParamID::EventsSerif, &msg.m_Height, &blob);
+
+    Send(msg);
+    m_Flags |= Flags::SerifSent;
 }
 
 void Node::Peer::OnMsg(proto::HaveTransaction&& msg)
@@ -3368,7 +3421,7 @@ void Node::Peer::OnMsg(proto::GetEvents&& msg)
             ser & wlk.m_Height;
             ser.WriteRaw(wlk.m_Body.p, wlk.m_Body.n);
 
-            nCount++;
+            nCount++;   
 		}
 
         ser.swap_buf(msgOut.m_Events);
@@ -3376,7 +3429,7 @@ void Node::Peer::OnMsg(proto::GetEvents&& msg)
     else
         LOG_WARNING() << "Peer " << m_RemoteAddr << " Unauthorized Utxo events request.";
 
-    if (proto::LoginFlags::Extension4 & m_LoginFlags)
+    if (proto::LoginFlags::Extension::get(m_LoginFlags) >= 4)
     {
         Send(msgOut);
     }
@@ -4375,8 +4428,9 @@ void Node::PrintTxos()
     if (m_Processor.IsFastSync())
         os << "Note: Fast-sync is in progress. Data is preliminary and not fully verified yet." << std::endl;
 
-    if (m_Processor.m_Extra.m_TxoHi >= Rules::HeightGenesis)
-        os << "Note: Cut-through up to Height=" << m_Processor.m_Extra.m_TxoHi << ", Txos spent earlier may be missing. To recover them too please make full sync." << std::endl;
+    Height hSerif0 = m_Processor.get_DB().ParamIntGetDef(NodeDB::ParamID::EventsSerif);
+    if (hSerif0 >= Rules::HeightGenesis)
+        os << "Note: Cut-through up to Height=" << hSerif0 << ", Txos spent earlier may be missing. To recover them too please make full sync." << std::endl;
 
     NodeDB::WalkerEvent wlk;
     for (m_Processor.get_DB().EnumEvents(wlk, Rules::HeightGenesis - 1); wlk.MoveNext(); )

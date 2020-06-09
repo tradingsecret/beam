@@ -64,7 +64,6 @@ namespace beam::wallet
 #endif  // BEAM_ATOMIC_SWAP_SUPPORT
         , private IWalletModelAsync
         , private IWalletDB::IRecoveryProgress
-        , private IPrivateKeyKeeper::Handler
         , private INodeConnectionObserver
         , private IExchangeRateObserver
         , private INotificationsObserver
@@ -126,7 +125,8 @@ namespace beam::wallet
         virtual void onExportDataToJson(const std::string& data) {}
         virtual void onPostFunctionToClientContext(MessageFunction&& func) {}
         virtual void onExportTxHistoryToCsv(const std::string& data) {}
-        virtual Version getAppVersion();
+        virtual Version getLibVersion() const;
+        virtual uint32_t getClientRevision() const;
         void onExchangeRates(const std::vector<ExchangeRate>&) override {}
         void onNotificationsChanged(ChangeAction, const std::vector<Notification>&) override {}
         

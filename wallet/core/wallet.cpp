@@ -161,22 +161,40 @@ namespace beam::wallet
         m_MessageEndpoints.insert(endpoint);
     }
 
-    // Rescan the blockchain for UTXOs
+    // Rescan the blockchain for UTXOs and shielded coins
     void Wallet::Rescan()
     {
+        AbortEvents();
+
         // We save all Incoming coins of active transactions and
         // restore them after clearing db. This will save our outgoing & available amounts
         std::vector<Coin> ocoins;
+        // do the same thing with shielded coins which are in progress
+        std::vector<ShieldedCoin> shieldedCoins;
         for (const auto& tx : m_ActiveTransactions)
         {
             const auto& txocoins = m_WalletDB->getCoinsCreatedByTx(tx.first);
             ocoins.insert(ocoins.end(), txocoins.begin(), txocoins.end());
+            auto shieldedCoin = m_WalletDB->getShieldedCoin(tx.first);
+
+            // save newly created coins only to be able to accomplish the transaction,
+            // all the others should be able to be restored from blockchain
+            if (shieldedCoin && shieldedCoin->m_createTxId && *shieldedCoin->m_createTxId == tx.first)
+            {
+                shieldedCoins.push_back(*shieldedCoin);
+            }
         }
 
         m_WalletDB->clearCoins();
+        m_WalletDB->clearShieldedCoins();
 
         // Restore Incoming coins of active transactions
         m_WalletDB->saveCoins(ocoins);
+        // Restore shielded coins
+        for (const auto& sc : shieldedCoins)
+        {
+            m_WalletDB->saveShieldedCoin(sc);
+        }
 
         storage::setVar(*m_WalletDB, s_szNextEvt, 0);
         RequestEvents();
@@ -892,6 +910,12 @@ namespace beam::wallet
                         m_This.ProcessEventShieldedUtxo(shieldedEvt, m_Height);
                         return;
                     }
+                    case proto::Event::Type::AssetCtl:
+                    {
+                        proto::Event::AssetCtl assetEvt = Cast::Up<proto::Event::AssetCtl>(evt_);
+                        m_This.ProcessEventAsset(assetEvt, m_Height);
+                        return;
+                    }
                     case proto::Event::Type::Utxo:
                     {
                         proto::Event::Utxo& evt = Cast::Up<proto::Event::Utxo>(evt_);
@@ -984,6 +1008,11 @@ namespace beam::wallet
         m_WalletDB->saveCoin(c);
     }
 
+    void Wallet::ProcessEventAsset(const proto::Event::AssetCtl& assetCtl, Height h)
+    {
+        // since there is not asset id passed we ignore this event at the moment
+    }
+
     void Wallet::ProcessEventShieldedUtxo(const proto::Event::Shielded& shieldedEvt, Height h)
     {
         auto shieldedCoin = m_WalletDB->getShieldedCoin(shieldedEvt.m_Key);
@@ -1046,7 +1075,7 @@ namespace beam::wallet
             {
                 // Reconstruct tx with reset parameters and add it to the active list
                 auto pTx = ConstructTransaction(tx.m_txId, tx.m_txType);
-                if (pTx->Rollback(sTip.m_Height))
+                if (pTx && pTx->Rollback(sTip.m_Height))
                 {
                     m_ActiveTransactions.emplace(tx.m_txId, pTx);
                     UpdateOnSynced(pTx);
@@ -1059,6 +1088,53 @@ namespace beam::wallet
         {
             SetEventsHeight(sTip.m_Height);
         }
+    }
+
+    void Wallet::OnEventsSerif(const Hash::Value& hv, Height h)
+    {
+        static const char szEvtSerif[] = "EventsSerif";
+
+        HeightHash hh;
+        if (!storage::getVar(*m_WalletDB, szEvtSerif, hh))
+        {
+            hh.m_Hash = Zero;
+
+            Block::SystemState::Full sTip;
+            get_tip(sTip);
+
+            bool bWasFullySynced = (sTip.m_Height + 1 == GetEventsHeightNext());
+            hh.m_Height = bWasFullySynced ? sTip.m_Height : MaxHeight;
+        }
+
+        bool bHashChanged = (hh.m_Hash != hv);
+        bool bMustRescan = bHashChanged;
+        if (bHashChanged)
+        {
+            // Node Serif has changed (either connected to different node, or it rescanned the blockchain). The events stream may not be consistent with ours.
+            Height h0 = GetEventsHeightNext();
+            if (!h0)
+                bMustRescan = false; // nothing to rescan atm
+            else
+            {
+                if (h0 > hh.m_Height)
+                {
+                    // Our events are consistent and full up to height h0-1.
+                    bMustRescan = (h >= h0);
+                }
+            }
+
+            hh.m_Hash = hv;
+        }
+
+        if (bHashChanged || (h != hh.m_Height))
+        {
+            hh.m_Height = h;
+            storage::setVar(*m_WalletDB, szEvtSerif, hh);
+        }
+
+        if (bMustRescan)
+            Rescan();
+
     }
 
     void Wallet::OnNewTip()
@@ -1340,7 +1416,7 @@ namespace beam::wallet
 
         auto completedParameters = it->second->CheckAndCompleteParameters(parameters);
 
-        if (auto peerID = parameters.GetParameter(TxParameterID::PeerSecureWalletID); peerID)
+        if (auto peerID = parameters.GetParameter(TxParameterID::PeerWalletIdentity); peerID)
         {
             auto myID = parameters.GetParameter<WalletID>(TxParameterID::MyID);
             if (myID)
@@ -1348,7 +1424,7 @@ namespace beam::wallet
                 auto address = m_WalletDB->getAddress(*myID);
                 if (address)
                 {
-                    completedParameters.SetParameter(TxParameterID::MySecureWalletID, address->m_Identity);
+                    completedParameters.SetParameter(TxParameterID::MyWalletIdentity, address->m_Identity);
                 }
             }
         }

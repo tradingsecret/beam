@@ -952,17 +952,22 @@ namespace beam::wallet
     };
 #pragma pack (pop)
 
-    string Coin::toStringID() const
+    std::string toString(const CoinID& id)
     {
         CoinIDPacked packed;
-        packed.m_Kid = m_ID;
-        packed.m_Value = m_ID.m_Value;
+        packed.m_Kid = id;
+        packed.m_Value = id.m_Value;
 
-        if (!m_ID.m_AssetID)
+        if (!id.m_AssetID)
             return to_hex(&packed.m_Kid, sizeof(packed) - sizeof(packed.m_AssetID));
 
-        packed.m_AssetID = m_ID.m_AssetID;
+        packed.m_AssetID = id.m_AssetID;
         return to_hex(&packed, sizeof(packed));
+    }
+
+    string Coin::toStringID() const
+    {
+        return toString(m_ID);
     }
 
     Amount Coin::getAmount() const
@@ -2098,6 +2103,60 @@ namespace beam::wallet
 
                 return true;
             }
+
+            typedef std::map<ECC::Point, ShieldedTxo::BaseKey> ShieldedSpendKeyMap;
+            ShieldedSpendKeyMap m_mapShielded;
+
+            virtual bool OnAssetRecognized(Asset::Full&) override
+            {
+                // TODO
+                return true;
+            }
+
+            virtual bool OnShieldedOutRecognized(const ShieldedTxo::DescriptionOutp& dout, const ShieldedTxo::DataParams& pars, Key::Index nIdx) override
+            {
+                ShieldedCoin sc;
+
+                sc.m_Key.m_nIdx = nIdx;
+                sc.m_Key.m_IsCreatedByViewer = pars.m_Ticket.m_IsCreatedByViewer;
+                sc.m_Key.m_kSerG = pars.m_Ticket.m_pK[0];
+
+                sc.m_User = pars.m_Output.m_User;
+                sc.m_ID = dout.m_ID;
+                sc.m_assetID = pars.m_Output.m_AssetID;
+                sc.m_value = pars.m_Output.m_Value;
+                sc.m_confirmHeight = dout.m_Height;
+                sc.m_spentHeight = MaxHeight;
+
+                m_This.saveShieldedCoin(sc);
+
+                LOG_INFO() << "Shielded output, ID: " << dout.m_ID << " Confirmed, Height=" << dout.m_Height;
+
+                m_mapShielded[pars.m_Ticket.m_SpendPk] = sc.m_Key;
+
+                return true;
+            }
+
+            virtual bool OnShieldedIn(const ShieldedTxo::DescriptionInp& dinp) override
+            {
+                ShieldedSpendKeyMap::iterator it = m_mapShielded.find(dinp.m_SpendPk);
+                if (m_mapShielded.end() != it)
+                {
+                    auto shieldedCoin = m_This.getShieldedCoin(it->second);
+                    if (shieldedCoin)
+                    {
+                        shieldedCoin->m_spentHeight = dinp.m_Height;
+                        m_This.saveShieldedCoin(*shieldedCoin);
+
+                        LOG_INFO() << "Shielded input, ID: " << shieldedCoin->m_ID << " Spent, Height=" << dinp.m_Height;
+                    }
+
+                    m_mapShielded.erase(it);
+                }
+
+                return true;
+            }
+
         };
 
         MyParser p(*this, prog);
@@ -2528,6 +2587,21 @@ namespace beam::wallet
         return true;
     }
 
+    void WalletDB::visitShieldedCoins(std::function<bool(const ShieldedCoin& info)> func)
+    {
+        sqlite::Statement stm(this, "SELECT " SHIELDED_COIN_FIELDS " FROM " SHIELDED_COINS_NAME " ORDER BY ID;");
+        while (stm.step())
+        {
+            ShieldedCoin coin;
+
+            int colIdx = 0;
+            ENUM_SHIELDED_COIN_FIELDS(STM_GET_LIST, NOSEP, coin);
+
+            if (!func(coin))
+                break;
+        }
+    }
+
     void WalletDB::visitCoins(function<bool(const Coin& coin)> func)
     {
         const char* req = "SELECT " STORAGE_FIELDS " FROM " STORAGE_NAME " ORDER BY ROWID;";
@@ -2742,6 +2816,13 @@ namespace beam::wallet
             return coin;
         }
         return {};
+    }
+
+    void WalletDB::clearShieldedCoins()
+    {
+        sqlite::Statement stm(this, "DELETE FROM " SHIELDED_COINS_NAME ";");
+        stm.step();
+        notifyShieldedCoinsChanged(ChangeAction::Reset, {});
     }
 
     void WalletDB::saveShieldedCoin(const ShieldedCoin& shieldedCoin)
@@ -4292,8 +4373,19 @@ namespace beam::wallet
                 return true;
             });
 
+            walletDB.visitShieldedCoins([getTotalsRef](const ShieldedCoin& coin) -> bool {
+                // always add to totals even if there will be no available coins
+                auto& totals = getTotalsRef(coin.m_assetID);
+                if(coin.IsAvailable())
+                {
+                    const AmountBig::Type value = coin.m_value;
+                    totals.Shielded += value;
+                }
+                return true;
+            });
+
              walletDB.visitAssets([this](const WalletAsset& asset) -> bool {
-                // we also add owned assets to totals even if there are no coins
+                // we also add owned assets to totals even if there are no coins for owned assets
                 if(!HasTotals(asset.m_ID) && asset.m_IsOwned)
                 {
                     allTotals[asset.m_ID] = AssetTotals();
@@ -4839,8 +4931,8 @@ namespace beam::wallet
             bool bSuccess = 
                 (
                     (
-                        storage::getTxParameter(walletDB, txID, TxParameterID::PeerSecureWalletID, pi.m_Receiver.m_Pk) &&  // payment proiof using wallet ID
-                        storage::getTxParameter(walletDB, txID, TxParameterID::MySecureWalletID, pi.m_Sender.m_Pk)
+                        storage::getTxParameter(walletDB, txID, TxParameterID::PeerWalletIdentity, pi.m_Receiver.m_Pk) &&  // payment proiof using wallet ID
+                        storage::getTxParameter(walletDB, txID, TxParameterID::MyWalletIdentity, pi.m_Sender.m_Pk)
                     ) ||
                     (
                         storage::getTxParameter(walletDB, txID, TxParameterID::PeerID, pi.m_Receiver) && // payment proof using SBBS address
@@ -4895,8 +4987,8 @@ namespace beam::wallet
 
         std::string getIdentity(const TxParameters& txParams, bool isSender)
         {
-            auto v = isSender ? txParams.GetParameter<PeerID>(TxParameterID::MySecureWalletID)
-                              : txParams.GetParameter<PeerID>(TxParameterID::PeerSecureWalletID);
+            auto v = isSender ? txParams.GetParameter<PeerID>(TxParameterID::MyWalletIdentity)
+                              : txParams.GetParameter<PeerID>(TxParameterID::PeerWalletIdentity);
 
             return v ? std::to_string(*v) : "";
         }

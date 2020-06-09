@@ -1280,8 +1280,8 @@ namespace beam
 	{
 		m_Output = 10;
 		m_Kernel = 10;
-		m_ShieldedInput = 1000;
-		m_ShieldedOutput = 1000;
+		m_ShieldedInput = MinShieldedFee - m_Kernel;
+		m_ShieldedOutput = MinShieldedFee - m_Kernel - m_Output;
 	}
 
 	Amount Transaction::FeeSettings::Calculate(const Transaction& t) const
@@ -1590,7 +1590,6 @@ namespace beam
 	}
 
 	const Height Rules::HeightGenesis	= 1;
-	const Amount Rules::Coin			= 100000000;
 
 	Rules::Rules()
 	{
@@ -2614,26 +2613,25 @@ namespace beam
 		uint32_t N = Rules::get().CA.m_ProofCfg.get_N();
 		assert(N);
 
-		ECC::Hash::Value hv;
-		ECC::Hash::Processor() << skGen >> hv;
-
-		uint32_t nPos;
-		hv.ExportWord<0>(nPos);
-		nPos %= N; // the position of this element in the list
-
-		if (aid > nPos)
+		if (aid > N / 2)
 		{
-			// TODO: don't exceed the max current asset count, for this we must query it
-			m_Begin = aid - nPos;
-		}
-		else
-		{
-			m_Begin = 0;
-			nPos = aid;
+			ECC::Hash::Value hv;
+			ECC::Hash::Processor() << skGen >> hv;
+
+			uint32_t nPos;
+			hv.ExportWord<0>(nPos);
+			nPos %= N; // the position of this element in the list
+
+			if (aid > nPos)
+			{
+				// TODO: don't exceed the max current asset count, for this we must query it
+				m_Begin = aid - nPos;
+				return nPos;
+			}
 		}
 
-		assert(m_Begin + nPos == aid);
-		return nPos;
+		m_Begin = 0;
+		return aid;
 	}
 
 	bool Asset::Proof::IsValid(ECC::Point::Native& hGen, ECC::InnerProduct::BatchContext& bc, ECC::Scalar::Native* pKs) const

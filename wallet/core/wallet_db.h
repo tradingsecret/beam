@@ -97,7 +97,7 @@ namespace beam::wallet
     };
 
     using CoinIDList = std::vector<Coin::ID>;
-    
+    std::string toString(const CoinID& id);
     // Used for SBBS Address management in the wallet
     struct WalletAddress
     {
@@ -225,7 +225,7 @@ namespace beam::wallet
 
         bool IsAvailable() const
         {
-            return m_confirmHeight != MaxHeight && !m_spentTxId;
+            return m_confirmHeight != MaxHeight && m_spentHeight == MaxHeight && !m_spentTxId;
         }
 
         ShieldedTxo::BaseKey m_Key;
@@ -386,6 +386,7 @@ namespace beam::wallet
         // Generic visitors
         virtual void visitCoins(std::function<bool(const Coin& coin)> func) = 0;
         virtual void visitAssets(std::function<bool(const WalletAsset&)> func) = 0;
+        virtual void visitShieldedCoins(std::function<bool(const ShieldedCoin& info)> func) = 0;
 
         // Used in split API for session management
         virtual bool lockCoins(const CoinIDList& list, uint64_t session) = 0;
@@ -404,6 +405,7 @@ namespace beam::wallet
         virtual boost::optional<ShieldedCoin> getShieldedCoin(const TxID& txId) const = 0;
         virtual boost::optional<ShieldedCoin> getShieldedCoin(TxoID id) const = 0;
         virtual boost::optional<ShieldedCoin> getShieldedCoin(const ShieldedTxo::BaseKey&) const = 0;
+        virtual void clearShieldedCoins() = 0;
         virtual void saveShieldedCoin(const ShieldedCoin& shieldedCoin) = 0;
 
         // Rollback shielded UTXO set to known height (used in rollback scenario)
@@ -535,6 +537,7 @@ namespace beam::wallet
 
         void visitCoins(std::function<bool(const Coin& coin)> func) override;
         void visitAssets(std::function<bool(const WalletAsset& info)> func) override;
+        void visitShieldedCoins(std::function<bool(const ShieldedCoin& info)> func) override;
 
         void setVarRaw(const char* name, const void* data, size_t size) override;
         bool getVarRaw(const char* name, void* data, int size) const override;
@@ -552,6 +555,7 @@ namespace beam::wallet
         boost::optional<ShieldedCoin> getShieldedCoin(const TxID& txId) const override;
         boost::optional<ShieldedCoin> getShieldedCoin(TxoID id) const override;
         boost::optional<ShieldedCoin> getShieldedCoin(const ShieldedTxo::BaseKey&) const override;
+        void clearShieldedCoins() override;
         void saveShieldedCoin(const ShieldedCoin& shieldedCoin) override;
         void rollbackConfirmedShieldedUtxo(Height minHeight) override;
 

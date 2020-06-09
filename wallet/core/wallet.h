@@ -167,6 +167,7 @@ namespace beam::wallet
         void get_OwnerKdf(Key::IPKdf::Ptr&) override;
         Block::SystemState::IHistory& get_History() override;
         void OnOwnedNode(const PeerID&, bool bUp) override;
+        void OnEventsSerif(const ECC::Hash::Value&, Height) override;
 
         struct RequestHandler
             : public proto::FlyClient::Request::IHandler
@@ -188,6 +189,7 @@ namespace beam::wallet
         void RequestEvents();
         void AbortEvents();
         void ProcessEventUtxo(const CoinID&, Height h, Height hMaturity, bool bAdd);
+        void ProcessEventAsset(const proto::Event::AssetCtl& assetCtl, Height h);
         void SetEventsHeight(Height);
         Height GetEventsHeightNext();
         void ProcessEventShieldedUtxo(const proto::Event::Shielded& shieldedEvt, Height h);

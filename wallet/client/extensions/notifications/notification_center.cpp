@@ -22,7 +22,8 @@ namespace beam::wallet
      *  @storage                used to store notifications
      *  @activeNotifications    shows which of Notification::Type are active
      */
-    NotificationCenter::NotificationCenter(IWalletDB& storage, const std::map<Notification::Type,bool>& activeNotifications, io::Reactor::Ptr reactor)
+    NotificationCenter::NotificationCenter(
+        IWalletDB& storage, const std::map<Notification::Type,bool>& activeNotifications, io::Reactor::Ptr reactor)
         : m_storage(storage)
         , m_activeNotifications(activeNotifications)
         , m_checkoutTimer(io::Timer::create(*reactor))
@@ -66,31 +67,10 @@ namespace beam::wallet
         m_activeNotifications[type] = onOff;
     }
 
-    size_t NotificationCenter::getUnreadCount(VersionInfo::Application app, const Version& currentAppVersion) const
+    size_t NotificationCenter::getUnreadCount(
+        std::function<size_t(Cache::const_iterator, Cache::const_iterator)> counter) const
     {
-        // TODO: #1414 change to use WalletImplVerInfo
-        return std::count_if(m_cache.begin(), m_cache.end(),
-            [app, &currentAppVersion](const auto& p)
-            {
-                if (p.second.m_state == Notification::State::Unread)
-                {
-                    if (p.second.m_type == Notification::Type::SoftwareUpdateAvailable)
-                    {
-                        VersionInfo info;
-                        if (fromByteBuffer(p.second.m_content, info) &&
-                            app == VersionInfo::Application::DesktopWallet &&
-                            currentAppVersion < info.m_version)
-                        {
-                            return true;
-                        }
-                    }
-                    if (p.second.m_type == Notification::Type::TransactionFailed)
-                    {
-                        return true;
-                    }
-                }
-                return false;
-            });
+        return counter(m_cache.begin(), m_cache.end());
     }
 
     void NotificationCenter::createNotification(const Notification& notification)
@@ -157,6 +137,7 @@ namespace beam::wallet
             if (!isNotificationTypeActive(pair.second.m_type))
                 continue;
             if (pair.second.m_type != Notification::Type::SoftwareUpdateAvailable // we do not filter out deleted software update notifications
+                && pair.second.m_type != Notification::Type::WalletImplUpdateAvailable
                 && pair.second.m_state == Notification::State::Deleted)
                 continue;
             notifications.push_back(pair.second);

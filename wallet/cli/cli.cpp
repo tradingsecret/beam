@@ -36,6 +36,7 @@
 #include "core/serialization_adapters.h"
 #include "core/treasury.h"
 #include "core/block_rw.h"
+#include <algorithm>
 //#include "unittests/util.h"
 #include "mnemonic/mnemonic.h"
 #include "utility/string_helpers.h"
@@ -405,8 +406,86 @@ namespace
         return 0;
     }
 
-    void printHelp(const po::options_description& options)
+    using CommandFunc = int (*)(const po::variables_map&);
+    struct Command
     {
+        std::string name;
+        CommandFunc handler;
+        std::string description;
+    };
+
+    // simple formating
+    void PrintParagraph(std::stringstream& ss, const std::string& text, size_t start, size_t end)
+    {
+        for (size_t s = ss.str().size(); s < start; ++s)
+        {
+            ss.put(' ');
+        }
+        size_t textPos = 0, linePos = start;
+        bool skipSpaces = true;
+        for (size_t i = 0; i < text.size(); ++i)
+        {
+            if (isspace(text[i]))
+            {
+                if(skipSpaces)
+                {
+                    for (; isspace(text[textPos]) && textPos != i; ++textPos);
+                    skipSpaces = false;
+                }
+
+                for (; textPos != i; ++textPos)
+                {
+                    ss.put(text[textPos]);
+                }
+            }
+
+            if (linePos == end)
+            {
+                ss.put('\n');
+                {
+                    size_t j = start;
+                    while (j--)
+                    {
+                        ss.put(' ');
+                    }
+                }
+                linePos = start;
+                skipSpaces = true;
+            }
+            else
+            {
+                ++linePos;
+            }
+        }
+
+        if (skipSpaces)
+        {
+            for (; isspace(text[textPos]) && textPos != text.size(); ++textPos);
+            skipSpaces = false;
+        }
+
+        for (; textPos != text.size(); ++textPos)
+        {
+            ss.put(text[textPos]);
+        }
+    }
+
+    void printHelp(const Command* begin, const Command* end, const po::options_description& options)
+    {
+        if (begin != end)
+        {
+            cout << "\nUSAGE: " << APP_NAME << " <command> [options] [configuration rules]\n\n";
+            cout << "COMMANDS:\n";
+            for (auto it = begin; it != end; ++it)
+            {
+                std::stringstream ss;
+                ss << "  " << it->name;
+                PrintParagraph(ss, it->description, 40, 80);
+                ss << '\n';
+                cout << ss.str();
+            }
+            cout << std::endl;
+        }
         cout << options << std::endl;
     }
 
@@ -611,7 +690,7 @@ namespace
 #ifdef BEAM_LIB_VERSION
             params.SetParameter(beam::wallet::TxParameterID::LibraryVersion, std::string(BEAM_LIB_VERSION));
 #endif // BEAM_LIB_VERSION
-            params.SetParameter(TxParameterID::PeerSecureWalletID, address->m_Identity);
+            params.SetParameter(TxParameterID::PeerWalletIdentity, address->m_Identity);
             AddVoucherParameter(vm, params, walletDB, address->m_OwnID);
         }
         else
@@ -620,7 +699,7 @@ namespace
             WalletAddress address = GenerateNewAddress(walletDB, "");
             
             params.SetParameter(TxParameterID::PeerID, address.m_walletID);
-            params.SetParameter(TxParameterID::PeerSecureWalletID, address.m_Identity);
+            params.SetParameter(TxParameterID::PeerWalletIdentity, address.m_Identity);
             AddVoucherParameter(vm, params, walletDB, address.m_OwnID);
         }
 
@@ -736,8 +815,9 @@ namespace
         std::string unitName = kAmountASSET;
         std::string nthName  = kAmountAGROTH;
         std::string ownerStr = kNA;
-        Height lkHeight = 0;
-        Height rfHeight = 0;
+        std::string lkHeight = kNA;
+        std::string rfHeight = kNA;
+        std::string emission = kNA;
 
         const auto info = db->findAsset(totals.AssetId);
         if (info.is_initialized())
@@ -748,8 +828,12 @@ namespace
             nthName  = meta.isStd() ? meta.GetNthUnitName() : kAmountAGROTH;
             ownerStr = (isOwned ? info->m_Owner.str() + "\nYou own this asset": info->m_Owner.str());
             coinName = meta.isStd() ? meta.GetName() + " (" + meta.GetShortName() + ")" : kNA;
-            lkHeight = info->m_LockHeight;
-            rfHeight = info->m_RefreshHeight;
+            lkHeight = std::to_string(info->m_LockHeight);
+            rfHeight = std::to_string(info->m_RefreshHeight);
+
+            std::stringstream ss;
+            ss << PrintableAmount(info->m_Value, true, unitName, nthName);
+            emission = ss.str();
         }
 
         const unsigned kWidth = 26;
@@ -758,11 +842,13 @@ namespace
              % boost::io::group(left, setfill('.'), setw(kWidth), kWalletAssetNameFormat) % coinName
              % boost::io::group(left, setfill('.'), setw(kWidth), kWalletAssetLockHeightFormat) % lkHeight
              % boost::io::group(left, setfill('.'), setw(kWidth), kWalletAssetRefreshHeightFormat) % rfHeight
+             % boost::io::group(left, setfill('.'), setw(kWidth), kWalletAssetEmissionFormat) % emission
              % boost::io::group(left, setfill('.'), setw(kWidth), kWalletAssetOwnerFormat) % ownerStr
              % boost::io::group(left, setfill('.'), setw(kWidth), kWalletSummaryFieldAvailable) % to_string(PrintableAmount(totals.Avail, false, unitName, nthName))
              % boost::io::group(left, setfill('.'), setw(kWidth), kWalletSummaryFieldInProgress) % to_string(PrintableAmount(totals.Incoming, false, unitName, nthName))
              % boost::io::group(left, setfill('.'), setw(kWidth), kWalletSummaryFieldUnavailable) % to_string(PrintableAmount(totals.Unavail, false, unitName, nthName))
-             % boost::io::group(left, setfill('.'), setw(kWidth), kWalletSummaryFieldTotalUnspent) % to_string(PrintableAmount(totals.Unspent, false, unitName, nthName));
+             % boost::io::group(left, setfill('.'), setw(kWidth), kWalletSummaryFieldTotalUnspent) % to_string(PrintableAmount(totals.Unspent, false, unitName, nthName))
+             % boost::io::group(left, setfill('.'), setw(kWidth), kWalletSummaryFieldShielded) % to_string(PrintableAmount(totals.Shielded, false, unitName, nthName));
 
         if (!info.is_initialized())
         {
@@ -942,7 +1028,7 @@ namespace
             const auto amountHeader = boost::format(kAssetTxHistoryColumnAmount) % unitName;
 
             const array<uint8_t, 7> columnWidths{{20, 10, 17, 18, 20, 33, 65}};
-                cout << boost::format(kAssetTxHistoryTableHead)
+                cout << boost::format(kTxHistoryTableHead)
                         % boost::io::group(left,  setw(columnWidths[0]),  kTxHistoryColumnDatetTime)
                         % boost::io::group(left,  setw(columnWidths[1]),  kTxHistoryColumnHeight)
                         % boost::io::group(left,  setw(columnWidths[2]),  kTxHistoryColumnDirection)
@@ -1046,7 +1132,10 @@ namespace
             }
         }
 
-        const array<uint8_t, 9> columnWidths{ { 12, 10, 10, 32, 32, 13, 11, 20, 18} };
+        const uint8_t nameWidth = std::max<uint8_t>(10, static_cast<uint8_t>(unitName.size()));
+        const uint8_t nthWidth  = std::max<uint8_t>(10, static_cast<uint8_t>(nthName.size()));
+
+        const array<uint8_t, 9> columnWidths{ { 10, nameWidth, nthWidth, 32, 32, 13, 11, 20, 18} };
         cout << "SHIELDED COINS\n\n"
              << boost::format(kShieldedCoinsTableHeadFormat)
                 % boost::io::group(left, setw(columnWidths[0]),  kCoinColumnId)
@@ -1207,7 +1296,8 @@ namespace
              % boost::io::group(left, setfill('.'), setw(kWidth), kWalletSummaryFieldTotalCoinbase) % to_string(PrintableAmount(totals.Coinbase))
              % boost::io::group(left, setfill('.'), setw(kWidth), kWalletSummaryFieldAvaliableFee) % to_string(PrintableAmount(totals.AvailFee))
              % boost::io::group(left, setfill('.'), setw(kWidth), kWalletSummaryFieldTotalFee) % to_string(PrintableAmount(totals.Fee))
-             % boost::io::group(left, setfill('.'), setw(kWidth), kWalletSummaryFieldTotalUnspent) % to_string(PrintableAmount(totals.Unspent));
+             % boost::io::group(left, setfill('.'), setw(kWidth), kWalletSummaryFieldTotalUnspent) % to_string(PrintableAmount(totals.Unspent))
+             % boost::io::group(left, setfill('.'), setw(kWidth), kWalletSummaryFieldShielded) % to_string(PrintableAmount(totals.Shielded));
 
         ShowAssetCoins(walletDB, Zero);
         ShowShilededCoins(vm, walletDB, Zero);
@@ -1280,7 +1370,7 @@ namespace
             else
             {
                 const array<uint8_t, 6> columnWidths{ {20, 26, 18, 15, 23, 33} };
-                cout << boost::format(kTxHistoryTableHead)
+                cout << boost::format(kSwapTxHistoryTableHead)
                     % boost::io::group(left, setw(columnWidths[0]), kTxHistoryColumnDatetTime)
                     % boost::io::group(right, setw(columnWidths[1]), kTxHistoryColumnAmount)
                     % boost::io::group(right, setw(columnWidths[2]), kTxHistoryColumnSwapAmount)
@@ -2923,7 +3013,8 @@ namespace
 
         txParams.SetParameter(TxParameterID::Amount, amount)
                 .SetParameter(TxParameterID::Fee, fee)
-                .SetParameter(TxParameterID::AssetID, assetId);
+                .SetParameter(TxParameterID::AssetID, assetId)
+                .SetParameter(TxParameterID::PreselectedCoins, GetPreselectedCoinIDs(vm));
 
         return wallet.StartTransaction(txParams);
     }
@@ -2978,11 +3069,11 @@ namespace
         WalletAddress senderAddress = GenerateNewAddress(walletDB, "");
 
         auto txParams = lelantus::CreatePullTransactionParameters(senderAddress.m_walletID)
-            // TODO check this param
             .SetParameter(TxParameterID::Amount, isAsset ? shieldedCoin->m_value : shieldedCoin->m_value - fee)
             .SetParameter(TxParameterID::Fee, fee)
             .SetParameter(TxParameterID::AssetID, shieldedCoin->m_assetID)
-            .SetParameter(TxParameterID::ShieldedOutputId, shieldedId);
+            .SetParameter(TxParameterID::ShieldedOutputId, shieldedId)
+            .SetParameter(TxParameterID::PreselectedCoins, GetPreselectedCoinIDs(vm));
 
         if (TxoID windowBegin = 0; ReadWindowBegin(vm, windowBegin))
         {
@@ -3010,6 +3101,45 @@ static const unsigned LOG_ROTATION_PERIOD_SEC = 3*60*60; // 3 hours
 int main_impl(int argc, char* argv[])
 {
     beam::Crash::InstallHandler(NULL);
+    const Command commands[] =
+    {
+        {cli::INIT,               InitWallet,                       "initialize new wallet database with a new seed phrase"},
+        {cli::RESTORE,            RestoreWallet,                    "restore wallet database from a seed phrase provided by the user"},
+        {cli::SEND,               Send,                             "send BEAM"},
+        {cli::LISTEN,             Listen,                           "listen to the node (the wallet won't close till halted"},
+        {cli::TREASURY,           HandleTreasury,                   "process treasury"},
+        {cli::INFO,               ShowWalletInfo,                   "print information about wallet balance and transactions"},
+        {cli::EXPORT_MINER_KEY,   ExportMinerKey,                   "export miner key to pass to a mining node"},
+        {cli::EXPORT_OWNER_KEY,   ExportOwnerKey,                   "export owner key to allow a node to monitor owned UTXO on the blockchain"},
+        {cli::NEW_ADDRESS,        CreateNewAddress,                 "generate new SBBS address"},
+        {cli::CANCEL_TX,          CancelTransaction,                "cancel transaction by ID"},
+        {cli::DELETE_TX,          DeleteTransaction,                "delete transaction by ID"},
+        {cli::CHANGE_ADDRESS_EXPIRATION, ChangeAddressExpiration,   "change SBBS address expiration time"},
+        {cli::TX_DETAILS,         TxDetails,                        "print details of the transaction with given ID"},
+        {cli::PAYMENT_PROOF_EXPORT, ExportPaymentProof,             "export payment proof by transaction ID"},
+        {cli::PAYMENT_PROOF_VERIFY, VerifyPaymentProof,             "verify payment proof"},
+        {cli::GENERATE_PHRASE,      GeneratePhrase,                 "generate new seed phrase"},
+        {cli::WALLET_ADDRESS_LIST,  ShowAddressList,                "print SBBS addresses"},
+        {cli::WALLET_RESCAN,        Rescan,                         "rescan the blockchain for owned UTXO (works only with node configured with an owner key)"},
+        {cli::EXPORT_DATA,          ExportWalletData,               "export wallet data (UTXO, transactions, addresses) to a JSON file"},
+        {cli::IMPORT_DATA,          ImportWalletData,               "import wallet data from a JSON file"},
+        {cli::SWAP_INIT,            InitSwap,                       "initialize atomic swap"},
+        {cli::SWAP_ACCEPT,          AcceptSwap,                     "accept atomic swap offer"},
+        {cli::SET_SWAP_SETTINGS,    SetSwapSettings,                "set generic atomic swap settings"},
+        {cli::SHOW_SWAP_SETTINGS,   ShowSwapSettings,               "print BTC/LTC/QTUM-specific swap settings"},
+        {cli::GET_TOKEN,            GetToken,                       "generate transaction token for a specific receiver (identifiable by SBBS address or wallet identity)"},
+#ifdef BEAM_LASER_SUPPORT   
+        {cli::LASER,                HandleLaser,                    "laser beam command"},
+#endif  // BEAM_LASER_SUPPORT
+        {cli::ASSET_ISSUE,          IssueAsset,                     "issue new confidential asset"},
+        {cli::ASSET_CONSUME,        ConsumeAsset,                   "consume (burn) an existing confidential asset"},
+        {cli::ASSET_REGISTER,       RegisterAsset,                  "register new asset with the blockchain"},
+        {cli::ASSET_UNREGISTER,     UnregisterAsset,                "unregister asset from the blockchain"},
+        {cli::ASSET_INFO,           GetAssetInfo,                   "print confidential asset information from a node"},
+
+        {cli::INSERT_TO_POOL,       InsertToShieldedPool,           "insert UTXO to the shielded pool"},
+        {cli::EXTRACT_FROM_POOL,    ExtractFromShieldedPool,        "extract shielded UTXO from the shielded pool"}
+    };
 
     try
     {
@@ -3038,14 +3168,14 @@ int main_impl(int argc, char* argv[])
         catch (const po::error& e)
         {
             cout << e.what() << std::endl;
-            printHelp(visibleOptions);
+            printHelp(begin(commands), end(commands), visibleOptions);
 
             return 0;
         }
 
         if (vm.count(cli::HELP))
         {
-            printHelp(visibleOptions);
+            printHelp(begin(commands), end(commands), visibleOptions);
 
             return 0;
         }
@@ -3088,53 +3218,13 @@ int main_impl(int argc, char* argv[])
                 if (vm.count(cli::COMMAND) == 0)
                 {
                     LOG_ERROR() << kErrorCommandNotSpecified;
-                    printHelp(visibleOptions);
+                    printHelp(begin(commands), end(commands), visibleOptions);
                     return 0;
                 }
 
                 auto command = vm[cli::COMMAND].as<string>();
 
-                using CommandFunc = int (*)(const po::variables_map&);
-                const std::pair<string, CommandFunc> commands[] =
-                {
-                    {cli::INIT,               InitWallet},
-                    {cli::RESTORE,            RestoreWallet},
-                    {cli::SEND,               Send},
-                    {cli::LISTEN,             Listen},
-                    {cli::TREASURY,           HandleTreasury},
-                    {cli::INFO,               ShowWalletInfo},
-                    {cli::EXPORT_MINER_KEY,   ExportMinerKey},
-                    {cli::EXPORT_OWNER_KEY,   ExportOwnerKey},
-                    {cli::NEW_ADDRESS,        CreateNewAddress},
-                    {cli::CANCEL_TX,          CancelTransaction},
-                    {cli::DELETE_TX,          DeleteTransaction},
-                    {cli::CHANGE_ADDRESS_EXPIRATION, ChangeAddressExpiration},
-                    {cli::TX_DETAILS,         TxDetails},
-                    {cli::PAYMENT_PROOF_EXPORT, ExportPaymentProof},
-                    {cli::PAYMENT_PROOF_VERIFY, VerifyPaymentProof},
-                    {cli::GENERATE_PHRASE,      GeneratePhrase},
-                    {cli::WALLET_ADDRESS_LIST,  ShowAddressList},
-                    {cli::WALLET_RESCAN,        Rescan},
-                    {cli::IMPORT_DATA,          ImportWalletData},
-                    {cli::EXPORT_DATA,          ExportWalletData},
-                    {cli::SWAP_INIT,            InitSwap},
-                    {cli::SWAP_ACCEPT,          AcceptSwap},
-                    {cli::SET_SWAP_SETTINGS,    SetSwapSettings},
-                    {cli::SHOW_SWAP_SETTINGS,   ShowSwapSettings},
-                    {cli::GET_TOKEN,            GetToken},
-#ifdef BEAM_LASER_SUPPORT   
-                    {cli::LASER,                HandleLaser},
-#endif  // BEAM_LASER_SUPPORT
-                    {cli::ASSET_ISSUE,          IssueAsset},
-                    {cli::ASSET_CONSUME,        ConsumeAsset},
-                    {cli::ASSET_REGISTER,       RegisterAsset},
-                    {cli::ASSET_UNREGISTER,     UnregisterAsset},
-                    {cli::ASSET_INFO,           GetAssetInfo},
-                    {cli::INSERT_TO_POOL,       InsertToShieldedPool},
-                    {cli::EXTRACT_FROM_POOL,    ExtractFromShieldedPool}
-                };
-
-                auto cit = find_if(begin(commands), end(commands), [&command](auto& p) {return p.first == command; });
+                auto cit = find_if(begin(commands), end(commands), [&command](auto& p) {return p.name == command; });
                 if (cit == end(commands))
                 {
                     LOG_ERROR() << boost::format(kErrorCommandUnknown) % command;
@@ -3144,7 +3234,7 @@ int main_impl(int argc, char* argv[])
                 LOG_INFO() << boost::format(kVersionInfo) % PROJECT_VERSION % BRANCH_NAME;
                 LOG_INFO() << boost::format(kRulesSignatureInfo) % Rules::get().get_SignatureStr();
                         
-                return cit->second(vm);
+                return cit->handler(vm);
             }
         }
         catch (const AddressExpiredException&)
@@ -3181,7 +3271,7 @@ int main_impl(int argc, char* argv[])
         catch (const po::error& e)
         {
             LOG_ERROR() << e.what();
-            printHelp(visibleOptions);
+            printHelp(begin(commands), end(commands), visibleOptions);
         }
         catch (const std::runtime_error& e)
         {

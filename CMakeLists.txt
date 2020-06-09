@@ -166,14 +166,12 @@ if(SHOW_CODE_LOCATION)
     add_definitions(-DSHOW_CODE_LOCATION=1)
 endif()
 
-option(BEAM_TESTNET "Build Testnet version" FALSE)
-option(BEAM_MAINNET "Build Mainnet version" FALSE)
 option(SWAP_MAINNET "Use mainnet blockchain when perform atomic swaps" FALSE)
 
 # uncomment next line for testnet
-#set(BEAM_TESTNET TRUE)
+#set(BEAM_TESTNET TRUE CACHE INTERNAL "")
 # uncomment next line for mainnet
-#set(BEAM_MAINNET TRUE)
+#set(BEAM_MAINNET TRUE CACHE INTERNAL "")
 
 # uncomment next line for swap mainnet
 #set(SWAP_MAINNET TRUE)
@@ -324,18 +322,14 @@ endfunction()
 
 if(IOS)
     set(BEAM_ATOMIC_SWAP_SUPPORT OFF)
-    set(BEAM_LELANTUS_SUPPORT OFF)
     set(BEAM_LASER_SUPPORT OFF)
-    set(BEAM_CONFIDENTIAL_ASSETS_SUPPORT OFF)
     add_compile_definitions(BOOST_NO_AUTO_PTR)
     add_definitions(-DBOOST_ERROR_CODE_HEADER_ONLY)
     CreateBoostComponentTargets("${BEAM_BOOST_COMPONENTS}" "$ENV{BOOST_ROOT_IOS}" "lib/libboost_" ".a")
 elseif(ANDROID)
     message("ANDROID_ABI: ${ANDROID_ABI}")
     set(BEAM_ATOMIC_SWAP_SUPPORT OFF)
-    set(BEAM_LELANTUS_SUPPORT OFF)
     set(BEAM_LASER_SUPPORT OFF)
-    set(BEAM_CONFIDENTIAL_ASSETS_SUPPORT OFF)
     add_compile_definitions(BOOST_ERROR_CODE_HEADER_ONLY)
     add_definitions(-DBOOST_ERROR_CODE_HEADER_ONLY)
 
