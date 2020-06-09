@@ -1595,6 +1595,8 @@ void NodeProcessor::OnFastSyncOver(MultiblockContext& mbc, bool& bContextFail)
 
 		ZeroObject(m_SyncData);
 		SaveSyncData();
+
+		OnFastSyncSucceeded();
 	}
 }
 

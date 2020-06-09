@@ -615,6 +615,24 @@ void Node::Processor::OnNewState()
 	get_ParentObj().MaybeGenerateRecovery();
 }
 
+void Node::Processor::OnFastSyncSucceeded()
+{
+    // update Events serif
+    ECC::Hash::Value hv;
+    Blob blob(hv);
+    if (!get_DB().ParamGet(NodeDB::ParamID::EventsSerif, nullptr, &blob))
+        return; //?!
+
+    get_DB().ParamSet(NodeDB::ParamID::EventsSerif, &m_Extra.m_TxoHi, &blob);
+
+    for (PeerList::iterator it = get_ParentObj().m_lstPeers.begin(); get_ParentObj().m_lstPeers.end() != it; it++)
+    {
+        Peer& peer = *it;
+        peer.m_Flags &= ~Peer::Flags::SerifSent;
+        peer.MaybeSendSerif();
+    }
+}
+
 void Node::MaybeGenerateRecovery()
 {
 	if (!m_PostStartSynced || m_Cfg.m_Recovery.m_sPathOutput.empty() || !m_Cfg.m_Recovery.m_Granularity)
@@ -994,15 +1012,24 @@ void Node::RefreshOwnedUtxos()
 	hp >> hv0;
 
 	Blob blob(hv1);
-	m_Processor.get_DB().ParamGet(NodeDB::ParamID::DummyID, NULL, &blob);
+	m_Processor.get_DB().ParamGet(NodeDB::ParamID::EventsOwnerID, NULL, &blob);
 
-	if (hv0 == hv1)
-		return; // unchanged
+    bool bChanged = (hv0 != hv1);
+    if (bChanged)
+    {
+        // changed
+        m_Processor.RescanOwnedTxos();
 
-	m_Processor.RescanOwnedTxos();
+        blob = Blob(hv0);
+        m_Processor.get_DB().ParamSet(NodeDB::ParamID::EventsOwnerID, NULL, &blob);
+    }
 
-	blob = Blob(hv0);
-	m_Processor.get_DB().ParamSet(NodeDB::ParamID::DummyID, NULL, &blob);
+    if (bChanged || !m_Processor.get_DB().ParamGet(NodeDB::ParamID::EventsSerif, nullptr, &blob))
+    {
+        hv0 = NextNonce();
+        blob = Blob(hv0);
+        m_Processor.get_DB().ParamSet(NodeDB::ParamID::EventsSerif, &m_Processor.m_Extra.m_TxoHi, &blob);
+    }
 }
 
 bool Node::Bbs::IsInLimits() const
@@ -1205,6 +1232,8 @@ void Node::Peer::OnMsg(proto::Authentication&& msg)
 			ProvePKdfObscured(*pOwner, proto::IDType::Viewer);
 		}
 	}
+
+    MaybeSendSerif();
 
     if (proto::IDType::Node != msg.m_IDType)
         return;
@@ -2642,6 +2671,7 @@ void Node::Peer::OnLogin(proto::Login&& msg)
 	}
 
     m_LoginFlags = msg.m_Flags;
+    MaybeSendSerif();
 
 	if (b != ShouldFinalizeMining()) {
 		// stupid compiler insists on parentheses!
@@ -2750,6 +2780,23 @@ void Node::Peer::BroadcastBbs()
 	}
 
 	m_CursorBbs = wlk.m_ID;
+}
+
+void Node::Peer::MaybeSendSerif()
+{
+    if (!(Flags::Viewer & m_Flags) || (Flags::SerifSent & m_Flags))
+        return;
+
+    if (proto::LoginFlags::Extension::get(m_LoginFlags) < 5)
+        return;
+
+    proto::EventsSerif msg;
+
+    Blob blob(msg.m_Value);
+    m_This.m_Processor.get_DB().ParamGet(NodeDB::ParamID::EventsSerif, &msg.m_Height, &blob);
+
+    Send(msg);
+    m_Flags |= Flags::SerifSent;
 }
 
 void Node::Peer::OnMsg(proto::HaveTransaction&& msg)
@@ -3368,7 +3415,7 @@ void Node::Peer::OnMsg(proto::GetEvents&& msg)
             ser & wlk.m_Height;
             ser.WriteRaw(wlk.m_Body.p, wlk.m_Body.n);
 
-            nCount++;
+            nCount++;   
 		}
 
         ser.swap_buf(msgOut.m_Events);
@@ -3376,7 +3423,7 @@ void Node::Peer::OnMsg(proto::GetEvents&& msg)
     else
         LOG_WARNING() << "Peer " << m_RemoteAddr << " Unauthorized Utxo events request.";
 
-    if (proto::LoginFlags::Extension4 & m_LoginFlags)
+    if (proto::LoginFlags::Extension::get(m_LoginFlags) >= 4)
     {
         Send(msgOut);
     }
@@ -4375,8 +4422,9 @@ void Node::PrintTxos()
     if (m_Processor.IsFastSync())
         os << "Note: Fast-sync is in progress. Data is preliminary and not fully verified yet." << std::endl;
 
-    if (m_Processor.m_Extra.m_TxoHi >= Rules::HeightGenesis)
-        os << "Note: Cut-through up to Height=" << m_Processor.m_Extra.m_TxoHi << ", Txos spent earlier may be missing. To recover them too please make full sync." << std::endl;
+    Height hSerif0 = m_Processor.get_DB().ParamIntGetDef(NodeDB::ParamID::EventsSerif);
+    if (hSerif0 >= Rules::HeightGenesis)
+        os << "Note: Cut-through up to Height=" << hSerif0 << ", Txos spent earlier may be missing. To recover them too please make full sync." << std::endl;
 
     NodeDB::WalkerEvent wlk;
     for (m_Processor.get_DB().EnumEvents(wlk, Rules::HeightGenesis - 1); wlk.MoveNext(); )
