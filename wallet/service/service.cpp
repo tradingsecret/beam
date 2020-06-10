@@ -12,7 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#ifndef NDEBUG
 #define LOG_VERBOSE_ENABLED 1
+#endif
+
 #include "utility/logger.h"
 
 #include "service.h"
@@ -49,8 +52,6 @@
 #include "node_connection.h"
 
 using json = nlohmann::json;
-
-static const unsigned LOG_ROTATION_PERIOD = 3 * 60 * 60 * 1000; // 3 hours
 static const size_t PACKER_FRAGMENTS_SIZE = 4096;
 
 using namespace beam;
@@ -741,7 +742,7 @@ namespace
                     _walletMap[data.id].walletDB = _walletDB;
                     _walletMap[data.id].wallet = _wallet;
 
-                    LOG_INFO() << "wallet sucessfully opened...";
+                    LOG_DEBUG() << "wallet sucessfully opened...";
 
                     _wallet->ResumeAllTransactions();
 
@@ -954,6 +955,12 @@ int main(int argc, char* argv[])
             LOG_INFO() << "Beam Wallet API " << PROJECT_VERSION << " (" << BRANCH_NAME << ")";
             LOG_INFO() << "Rules signature: " << Rules::get().get_SignatureStr();
             LOG_INFO() << "Current folder is " << boost::filesystem::current_path().string();
+
+            #ifdef NDEBUG
+            LOG_INFO() << "Log mode: Non-Debug";
+            #else
+            LOG_INFO() << "Log mode: Debug";
+            #endif
             
             if (vm.count(cli::NODE_ADDR) == 0)
             {
@@ -972,9 +979,11 @@ int main(int argc, char* argv[])
         io::Reactor::Scope scope(*reactor);
         io::Reactor::GracefulIntHandler gih(*reactor);
 
-        LogRotation logRotation(*reactor, LOG_ROTATION_PERIOD, beam::wallet::days2sec(options.logCleanupPeriod));
-
+        const unsigned LOG_ROTATION_PERIOD_SEC = 12 * 60 * 60; // in seconds, 12 hours
+        LogRotation logRotation(*reactor, LOG_ROTATION_PERIOD_SEC, beam::wallet::days2sec(options.logCleanupPeriod));
+        LOG_INFO() << "Log rotation: " <<  beam::wallet::sec2readable(LOG_ROTATION_PERIOD_SEC) << ". Log cleanup: " << options.logCleanupPeriod << " days.";
         LOG_INFO() << "Starting server on port " << options.port << ", sync pipes " << options.withPipes;
+
         WalletApiServer server(reactor, options.withAssets, node_addr, options.port, options.allowedOrigin, options.withPipes);
         reactor->run();
 
