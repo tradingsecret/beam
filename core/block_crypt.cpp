@@ -1608,18 +1608,14 @@ namespace beam
 			0x3c, 0x26, 0xa5, 0x26, 0xd2, 0xe2, 0x20, 0x63,
 		};
 
-		DA.Difficulty0 = Difficulty(22 << Difficulty::s_MantissaBits); // 2^22 = 4mln
-
 		ZeroObject(pForks);
 
-		pForks[1].m_Height = 321321;
+		pForks[1].m_Height = 321321; // mainnet hard fork
+		pForks[2].m_Height = 777777;
 
 		// future forks
-		for (size_t i = 2; i < _countof(pForks); i++)
+		for (size_t i = 3; i < _countof(pForks); i++)
 			pForks[i].m_Height = MaxHeight;
-
-		Magic.v0 = 14;
-		Magic.IsTestnet = false;
 	}
 
 	Amount Rules::get_EmissionEx(Height h, Height& hEnd, Amount base) const
