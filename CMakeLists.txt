@@ -169,7 +169,7 @@ endif()
 option(SWAP_MAINNET "Use mainnet blockchain when perform atomic swaps" FALSE)
 
 # uncomment next line for testnet
-#set(BEAM_TESTNET TRUE CACHE INTERNAL "")
+set(BEAM_TESTNET TRUE CACHE INTERNAL "")
 # uncomment next line for mainnet
 #set(BEAM_MAINNET TRUE CACHE INTERNAL "")
 
