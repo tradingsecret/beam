@@ -779,6 +779,13 @@ void Node::Processor::get_ViewerKeys(ViewerKeys& vk)
         vk.m_pSh = &get_ParentObj().m_Keys.m_vSh.front();
 }
 
+Height Node::Processor::get_MaxAutoRollback()
+{
+    return std::min(
+        NodeProcessor::get_MaxAutoRollback(),
+        get_ParentObj().m_Cfg.m_MaxAutoRollback);
+}
+
 void Node::Processor::OnEvent(Height h, const proto::Event::Base& evt)
 {
 	if (get_ParentObj().m_Cfg.m_LogEvents)
@@ -3467,6 +3474,9 @@ void Node::Peer::OnMsg(proto::GetEvents&& msg)
 
         Height hLast = 0;
         uint32_t nCount = 0;
+
+        // we'll send up to s_Max num of events, even to older clients, they won't complain
+        static_assert(proto::Event::s_Max > proto::Event::s_Max0);
 
         Serializer ser;
 

@@ -84,6 +84,9 @@ struct Node
 		// negative: number of cores minus number of mining threads.
 		int m_VerificationThreads = 0;
 
+		Height m_MaxAutoRollback = 60; // artificial restriction on how much the node will rollback automatically
+		// in either case it's no more than Rules::MaxRollback
+
 		struct Bbs
 		{
 			uint32_t m_MessageTimeout_s = 3600 * 12; // 1/2 day
@@ -198,6 +201,8 @@ struct Node
 	bool GenerateRecoveryInfo(const char*);
 	void PrintTxos();
 
+	void RefreshCongestions(); // call explicitly if manual rollback or forbidden state is modified
+
 	bool DecodeAndCheckHdrs(std::vector<Block::SystemState::Full>&, const proto::HdrPack&);
 
 private:
@@ -216,6 +221,7 @@ private:
 		void OnEvent(Height, const proto::Event::Base&) override;
 		void OnDummy(const CoinID&, Height) override;
 		void InitializeUtxosProgress(uint64_t done, uint64_t total) override;
+		Height get_MaxAutoRollback() override;
 		void Stop();
 
 		struct MyExecutorMT
@@ -602,8 +608,6 @@ private:
 	PeerID m_MyPublicID;
 
 	Peer* AllocPeer(const beam::io::Address&);
-
-	void RefreshCongestions();
 
 	struct Server
 		:public proto::NodeConnection::Server
