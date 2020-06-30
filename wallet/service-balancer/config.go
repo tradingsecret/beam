@@ -25,7 +25,8 @@ type Config struct {
 	BbsMonitorFirstPort     int
 	BbsMonitorLastPort      int
 	BbsMonitorCnt           int
-	SerivcePublicAddress    string
+	ServicePublicAddress    string
+	ReturnRawSvcPort        bool // if true login returns ServicePublicAddress:port, on false ServicePublicAddress?service=port
 	ListenAddress           string
 	PushContactMail			string
 	Debug				    bool
@@ -39,12 +40,12 @@ type Config struct {
 	DatabasePath            string
 	APISecret               string
 	AllowedOrigin           string
-	ActiviyLogInterval      time.Duration
+	ActivityLogInterval     time.Duration
 }
 
 var config = Config{
-	NoisyLogs:     false,
-	Debug:         true,
+	NoisyLogs:        false,
+	Debug:            true,
 }
 
 func loadConfig (m *melody.Melody) error {
@@ -88,10 +89,10 @@ func (cfg* Config) Read(fname string, m *melody.Melody) error {
 	if  cfg.WalletServiceLastPort <= 0 ||
 		cfg.WalletServiceFirstPort > cfg.WalletServiceLastPort ||
 		cfg.WalletServiceFirstPort + runtime.NumCPU() > cfg.WalletServiceLastPort {
-		return errors.New("config, invalid wallet serivce last port")
+		return errors.New("config, invalid wallet service last port")
 	}
 
-	if len(cfg.SerivcePublicAddress) == 0 {
+	if len(cfg.ServicePublicAddress) == 0 {
 		return errors.New("config, missing public address")
 	}
 
@@ -126,7 +127,7 @@ func (cfg* Config) Read(fname string, m *melody.Melody) error {
 	}
 
 	if cfg.ServiceLaunchTimeout == 0 {
-		cfg.ServiceLaunchTimeout = 5  * time.Second
+		cfg.ServiceLaunchTimeout = 10  * time.Second
 	}
 
 	if cfg.ServiceAliveTimeout == 0 {
@@ -134,7 +135,7 @@ func (cfg* Config) Read(fname string, m *melody.Melody) error {
 	}
 
 	if cfg.ServiceHeartbeatTimeout == 0 {
-		cfg.ServiceHeartbeatTimeout = 10 * time.Second
+		cfg.ServiceHeartbeatTimeout = 11 * time.Second // wait for 2 heartbeats via pipe + 1 second
 	}
 
 	if len(cfg.DatabasePath) == 0 {
@@ -163,14 +164,14 @@ func (cfg* Config) Read(fname string, m *melody.Melody) error {
 		}
 	}
 
-	if cfg.ActiviyLogInterval == 0 {
+	if cfg.ActivityLogInterval == 0 {
 		if cfg.Debug {
-			cfg.ActiviyLogInterval = time.Duration(1 * time.Minute)
+			cfg.ActivityLogInterval = time.Duration(5 * time.Second) //(1 * time.Minute)
 		} else {
-			cfg.ActiviyLogInterval = time.Duration(10 * time.Minute)
+			cfg.ActivityLogInterval = time.Duration(10 * time.Minute)
 		}
 	}
-	log.Printf("Activity log interval %v", cfg.ActiviyLogInterval)
+	log.Printf("Activity log interval %v", cfg.ActivityLogInterval)
 
 	if cfg.BbsMonitorCnt == 0 {
 		cfg.BbsMonitorCnt = 1
@@ -181,6 +182,14 @@ func (cfg* Config) Read(fname string, m *melody.Melody) error {
 		cfg.BbsMonitorCnt = 1
 	}
 
+	if len(cfg.APISecret) == 0 {
+		log.Println("Warning: APISecret is not provided. Balancer stats via /stats?secret=APISecret would be inaccessible")
+	}
+
 	log.Printf("starting in %v mode", mode)
 	return nil
+}
+
+func (cfg* Config) ShouldLaunchBBSMonitor () bool {
+	return len(cfg.VAPIDPublic) > 0 && len(cfg.VAPIDPrivate) > 0 && len(cfg.PushContactMail) > 0
 }

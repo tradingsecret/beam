@@ -45,6 +45,7 @@
 //lelantus
 #include "wallet/transactions/lelantus/pull_transaction.h"
 #include "wallet/transactions/lelantus/push_transaction.h"
+#include "wallet/transactions/lelantus/lelantus_reg_creators.h"
 
 #ifndef LOG_VERBOSE_ENABLED
     #define LOG_VERBOSE_ENABLED 0
@@ -1155,7 +1156,7 @@ namespace
         const auto displayCoins = [&](const std::vector<ShieldedCoin>& coins) {
             for (const auto& c : coins)
             {
-                TxoID anonymitySetForCoin = lastKnownShieldedOuts && (lastKnownShieldedOuts > c.m_ID) ? lastKnownShieldedOuts - c.m_ID : 0;
+                TxoID anonymitySetForCoin = c.GetAnonymitySet(lastKnownShieldedOuts);
                 cout << boost::format(kShieldedCoinsTableHeadFormat)
                     % boost::io::group(left, setw(columnWidths[0]),  c.m_ID == ShieldedCoin::kTxoInvalidID ? "--" : std::to_string(c.m_ID))
                     % boost::io::group(right, setw(columnWidths[1]), c.m_value / Rules::Coin)
@@ -1613,21 +1614,15 @@ namespace
 
     bool SaveExportedData(const ByteBuffer& data, const std::string& path)
     {
-        size_t dotPos = path.find_last_of('.');
-        stringstream ss;
-        ss << path.substr(0, dotPos);
-        ss << getTimestamp();
-        if (dotPos != string::npos)
-        {
-            ss << path.substr(dotPos);
-        }
-        string timestampedPath = ss.str();
+        const auto timestampedPath = TimestampFile(path);
+
         FStream f;
         if (f.Open(timestampedPath.c_str(), false) && f.write(data.data(), data.size()) == data.size())
         {
             LOG_INFO() << kDataExportedMessage;
             return true;
         }
+
         LOG_ERROR() << kErrorExportDataFail;
         return false;
     }
@@ -1953,7 +1948,7 @@ namespace
     }
 
     template<typename SettingsProvider, typename Settings, typename CoreSettings, typename ElectrumSettings>
-    int HandleSwapCoin(const po::variables_map& vm, const IWalletDB::Ptr& walletDB)
+    int HandleSwapCoin(const po::variables_map& vm, const IWalletDB::Ptr& walletDB, const char* swapCoin)
     {
         SettingsProvider settingsProvider{ walletDB };
         settingsProvider.Initialize();
@@ -2032,6 +2027,13 @@ namespace
 
         if (vm.count(cli::SWAP_FEERATE))
         {
+            Amount feeRate = vm[cli::SWAP_FEERATE].as<Positive<Amount>>().value;
+            if (feeRate < settings.GetMinFeeRate())
+            {
+                ostringstream stream;
+                stream << "Error: you set fee rate less than minimun. For " << swapCoin << " it should be > " << settings.GetMinFeeRate();
+                throw std::runtime_error(stream.str());
+            }
             settings.SetFeeRate(vm[cli::SWAP_FEERATE].as<Positive<Amount>>().value);
             isChanged = true;
         }
@@ -2133,15 +2135,18 @@ namespace
             {
             case beam::wallet::AtomicSwapCoin::Bitcoin:
             {
-                return HandleSwapCoin<bitcoin::SettingsProvider, bitcoin::Settings, bitcoin::BitcoinCoreSettings, bitcoin::ElectrumSettings>(vm, walletDB);
+                return HandleSwapCoin<bitcoin::SettingsProvider, bitcoin::Settings, bitcoin::BitcoinCoreSettings, bitcoin::ElectrumSettings>
+                    (vm, walletDB, kSwapCoinBTC);
             }
             case beam::wallet::AtomicSwapCoin::Litecoin:
             {
-                return HandleSwapCoin<litecoin::SettingsProvider, litecoin::Settings, litecoin::LitecoinCoreSettings, litecoin::ElectrumSettings>(vm, walletDB);
+                return HandleSwapCoin<litecoin::SettingsProvider, litecoin::Settings, litecoin::LitecoinCoreSettings, litecoin::ElectrumSettings>
+                    (vm, walletDB, kSwapCoinLTC);
             }
             case beam::wallet::AtomicSwapCoin::Qtum:
             {
-                return HandleSwapCoin<qtum::SettingsProvider, qtum::Settings, qtum::QtumCoreSettings, qtum::ElectrumSettings>(vm, walletDB);
+                return HandleSwapCoin<qtum::SettingsProvider, qtum::Settings, qtum::QtumCoreSettings, qtum::ElectrumSettings>
+                    (vm, walletDB, kSwapCoinQTUM);
             }
             default:
             {
@@ -2413,15 +2418,6 @@ namespace
         FillSwapFee(&(*swapTxParameters), fee, swapFeeRate, *isBeamSide);
 
         return wallet.StartTransaction(*swapTxParameters);
-    }
-
-    void RegisterLelantusTxCreators(Wallet& wallet, bool withAssets)
-    {
-        auto pushTxCreator = std::make_shared<lelantus::PushTransaction::Creator>(withAssets);
-        auto pullTxCreator = std::make_shared<lelantus::PullTransaction::Creator>(withAssets);
-
-        wallet.RegisterTransactionType(TxType::PushTransaction, std::static_pointer_cast<BaseTransaction::Creator>(pushTxCreator));
-        wallet.RegisterTransactionType(TxType::PullTransaction, std::static_pointer_cast<BaseTransaction::Creator>(pullTxCreator));
     }
 
     struct CliNodeConnection final : public proto::FlyClient::NetworkStd
@@ -2749,7 +2745,7 @@ namespace
             wallet::AsyncContextHolder holder(wallet);
 
 #ifdef BEAM_LELANTUS_SUPPORT
-            RegisterLelantusTxCreators(wallet, withAssets);
+            lelantus::RegisterCreators(wallet, withAssets);
 #endif
 #ifdef BEAM_ATOMIC_SWAP_SUPPORT
             RegisterSwapTxCreators(wallet, walletDB);

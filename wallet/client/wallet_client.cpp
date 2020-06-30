@@ -427,6 +427,8 @@ namespace beam::wallet
                 nodeNetworkSubscriber.reset();
                 assert(nodeNetwork.use_count() == 1);
                 nodeNetwork.reset();
+
+                m_DeferredBalanceUpdate.cancel(); // for more safety, while we see the same reactor
             }
             catch (const runtime_error& ex)
             {
@@ -1070,6 +1072,9 @@ namespace beam::wallet
         status.receiving         = AmountBig::get_Lo(totals.Incoming);
         status.sending           = AmountBig::get_Lo(totals.Outgoing);
         status.maturing          = AmountBig::get_Lo(totals.Maturing);
+        status.linked            = AmountBig::get_Lo(totals.Linked);
+        status.unlinked          = AmountBig::get_Lo(totals.Unlinked);
+        status.shielded          = AmountBig::get_Lo(totals.Shielded);
         status.update.lastTime   = m_walletDB->getLastUpdateTime();
 
         ZeroObject(status.stateID);

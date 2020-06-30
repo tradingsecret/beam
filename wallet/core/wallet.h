@@ -103,6 +103,7 @@ namespace beam::wallet
         // Type definitions for callback functors
         using TxCompletedAction = std::function<void(const TxID& tx_id)>;
         using UpdateCompletedAction = std::function<void()>;
+        using TxVisitor = std::function<void (const TxID&, BaseTransaction::Ptr)>;
 
         Wallet(IWalletDB::Ptr walletDB, bool withAssets, TxCompletedAction&& action = TxCompletedAction(), UpdateCompletedAction&& updateCompleted = UpdateCompletedAction());
         virtual ~Wallet();
@@ -115,6 +116,12 @@ namespace beam::wallet
         void Rescan();
 
         void RegisterTransactionType(TxType type, BaseTransaction::Creator::Ptr creator);
+
+        template<typename T>
+        void RegisterTransactionType(TxType type, std::shared_ptr<T> creator)
+        {
+            RegisterTransactionType(type, std::static_pointer_cast<BaseTransaction::Creator>(creator));
+        }
         TxID StartTransaction(const TxParameters& parameters);
         bool CanCancelTransaction(const TxID& txId) const;
         void CancelTransaction(const TxID& txId);
@@ -123,6 +130,7 @@ namespace beam::wallet
         void Subscribe(IWalletObserver* observer);
         void Unsubscribe(IWalletObserver* observer);
         void ResumeAllTransactions();
+        void VisitActiveTransaction(const TxVisitor& visitor);
 
         bool IsWalletInSync() const;
 
@@ -143,8 +151,8 @@ namespace beam::wallet
         void OnAsyncStarted() override;
         void OnAsyncFinished() override;
         void on_tx_completed(const TxID& txID) override;
+        void on_tx_failed(const TxID& txID) override;
 
-        void confirm_outputs(const std::vector<Coin>&) override;
         void confirm_kernel(const TxID&, const Merkle::Hash& kernelID, SubTxID subTxID) override;
         void confirm_asset(const TxID& txID, const PeerID& ownerID, SubTxID subTxID) override;
         void confirm_asset(const TxID& txID, const Asset::ID assetId, SubTxID subTxID = kDefaultSubTxID) override;
@@ -152,7 +160,7 @@ namespace beam::wallet
         bool get_tip(Block::SystemState::Full& state) const override;
         void send_tx_params(const WalletID& peerID, const SetTxParameter&) override;
         void get_shielded_list(const TxID& txId, TxoID startIndex, uint32_t count, ShieldedListCallback&& callback) override;
-        void get_proof_shielded_output(const TxID& txId, ECC::Point serialPublic, ProofShildedOutputCallback&& callback) override;
+        void get_proof_shielded_output(const TxID& txId, const ECC::Point& serialPublic, ProofShildedOutputCallback&& callback) override;
         void register_tx(const TxID& txId, Transaction::Ptr, SubTxID subTxID) override;
         void UpdateOnNextTip(const TxID&) override;
 

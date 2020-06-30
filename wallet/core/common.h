@@ -40,6 +40,7 @@ namespace beam::wallet
         PullTransaction,
         VoucherRequest,
         VoucherResponse,
+        UnlinkFunds,
         ALL
     };
 
@@ -162,10 +163,12 @@ namespace beam::wallet
     MACRO(KeyKeeperUserAbort,            40, "Aborted by the user") \
     MACRO(AssetExists,                   41, "Asset has been already registered") \
     MACRO(InvalidAssetOwnerId,           42, "Invalid asset owner id") \
-    MACRO(AssetsDisabled,                43, "Asset transactions are disabled in the wallet") \
+    MACRO(AssetsDisabled,                43, "Asset transactions are disabled in the receiver wallet") \
     MACRO(NoVouchers,                    44, "You have no vouchers to insert coins to lelentus") \
     MACRO(AssetsDisabledFork2,           45, "Asset transactions are not available until fork2") \
-    MACRO(Count,                         46, "PLEASE KEEP THIS ALWAYS LAST")
+    MACRO(KeyKeeperNoSlots,              46, "Key keeper out of slots") \
+    MACRO(ExtractFeeTooBig,              47, "Cannot extract shielded coin, fee is to big.") \
+    MACRO(Count,                         48, "PLEASE KEEP THIS ALWAYS LAST")
 
     enum TxFailureReason : int32_t
     {
@@ -660,8 +663,8 @@ namespace beam::wallet
         using ProofShildedOutputCallback = std::function<void(proto::ProofShieldedOutp)>;
         virtual ~INegotiatorGateway() {}
         virtual void on_tx_completed(const TxID& ) = 0;
+        virtual void on_tx_failed(const TxID&) = 0;
         virtual void register_tx(const TxID&, Transaction::Ptr, SubTxID subTxID = kDefaultSubTxID) = 0;
-        virtual void confirm_outputs(const std::vector<Coin>&) = 0;
         virtual void confirm_kernel(const TxID&, const Merkle::Hash& kernelID, SubTxID subTxID = kDefaultSubTxID) = 0;
         virtual void confirm_asset(const TxID& txID, const PeerID& ownerID, SubTxID subTxID = kDefaultSubTxID) = 0;
         virtual void confirm_asset(const TxID& txID, const Asset::ID assetId, SubTxID subTxID = kDefaultSubTxID) = 0;
@@ -669,7 +672,7 @@ namespace beam::wallet
         virtual bool get_tip(Block::SystemState::Full& state) const = 0;
         virtual void send_tx_params(const WalletID& peerID, const SetTxParameter&) = 0;
         virtual void get_shielded_list(const TxID&, TxoID startIndex, uint32_t count, ShieldedListCallback&& callback) = 0;
-        virtual void get_proof_shielded_output(const TxID&, ECC::Point serialPublic, ProofShildedOutputCallback&& callback) {};
+        virtual void get_proof_shielded_output(const TxID&, const ECC::Point& serialPublic, ProofShildedOutputCallback&& callback) {};
         virtual void UpdateOnNextTip(const TxID&) = 0;
     };
 
@@ -761,6 +764,8 @@ namespace beam::wallet
     std::string ConvertTokenToJson(const std::string& token);
     std::string ConvertJsonToToken(const std::string& json);
 
+    // add timestamp to the file name
+    std::string TimestampFile(const std::string& fileName);
 }    // beam::wallet
 
 namespace beam
