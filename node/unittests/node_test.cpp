@@ -2456,6 +2456,13 @@ namespace beam
 
 					void OnEventType(proto::Event::AssetCtl& evt)
 					{
+						if (m_This.m_Assets.m_ID) {
+							// creation event may come before the client got proof for its asset
+							verify_test(evt.m_Info.m_ID == m_This.m_Assets.m_ID);
+						}
+						verify_test(evt.m_Info.m_Metadata.m_Value == m_This.m_Assets.m_Metadata.m_Value);
+						verify_test(evt.m_Info.m_Owner == m_This.m_Assets.m_Owner);
+
 						if (proto::Event::Flags::Add & evt.m_Flags)
 						{
 							verify_test(!m_This.m_Assets.m_EvtCreated);
@@ -2649,6 +2656,11 @@ namespace beam
 
 		auto logger = beam::Logger::create(LOG_LEVEL_DEBUG, LOG_LEVEL_DEBUG);
 		node.PrintTxos();
+
+		NodeProcessor& proc = node.get_Processor();
+		proc.ManualRollbackTo(3);
+		verify_test(proc.m_Cursor.m_ID.m_Height >= 3); // it won't necessarily reach 3
+		verify_test(proc.m_sidForbidden.m_Height > Rules::HeightGenesis); // some rollback with forbidden state update must take place
 	}
 
 

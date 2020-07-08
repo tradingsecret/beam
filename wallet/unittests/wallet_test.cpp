@@ -311,6 +311,17 @@ namespace
         {
             preselectedIDs.push_back(c.m_ID);
         }
+        
+
+        cout << "An attempt to send from invalid address\n";
+        WALLET_CHECK_THROW(txId = sender.m_Wallet.StartTransaction(CreateSimpleTransactionParameters()
+            .SetParameter(TxParameterID::MyID, receiver.m_WalletID)
+            .SetParameter(TxParameterID::PeerID, receiver.m_WalletID)
+            .SetParameter(TxParameterID::Amount, Amount(6))
+            .SetParameter(TxParameterID::Fee, Amount(0))
+            .SetParameter(TxParameterID::Lifetime, Height(200))
+            .SetParameter(TxParameterID::PreselectedCoins, preselectedIDs)));
+
         sw.start();
 
         txId = sender.m_Wallet.StartTransaction(CreateSimpleTransactionParameters()
@@ -933,7 +944,7 @@ namespace
         TxID txID = wallet::GenerateTxID();
         SimpleTransaction::Creator simpleCreator(sender.m_WalletDB, true);
         BaseTransaction::Creator& creator = simpleCreator;
-        auto tx = creator.Create(gateway, sender.m_WalletDB, txID);
+        auto tx = creator.Create(BaseTransaction::TxContext(gateway, sender.m_WalletDB, txID));
 
         Height currentHeight = sender.m_WalletDB->getCurrentHeight();
 
@@ -995,7 +1006,7 @@ namespace
             } gateway;
 
             TxID txID = wallet::GenerateTxID();
-            auto tx = txCreator.Create(gateway, sender.m_WalletDB, txID);
+            auto tx = txCreator.Create(BaseTransaction::TxContext(gateway, sender.m_WalletDB, txID));
 
             tx->SetParameter(wallet::TxParameterID::TransactionType, wallet::TxType::Simple, false);
             tx->SetParameter(wallet::TxParameterID::MaxHeight, currentHeight + 2, false); // transaction is valid +lifetime blocks from currentHeight
@@ -1034,7 +1045,7 @@ namespace
             } gateway;
 
             TxID txID = wallet::GenerateTxID();
-            auto tx = txCreator.Create(gateway, sender.m_WalletDB, txID);
+            auto tx = txCreator.Create(BaseTransaction::TxContext(gateway, sender.m_WalletDB, txID));
 
             tx->SetParameter(wallet::TxParameterID::TransactionType, wallet::TxType::Simple, false);
             tx->SetParameter(wallet::TxParameterID::MaxHeight, currentHeight + 2, false); // transaction is valid +lifetime blocks from currentHeight
@@ -1466,6 +1477,10 @@ namespace
             WALLET_CHECK(identity.is_initialized());
             WALLET_CHECK(*identity == *p2.GetParameter<PeerID>(TxParameterID::PeerWalletIdentity));
             WALLET_CHECK(*p2.GetParameter<Amount>(TxParameterID::Amount) == Amount(11));
+        }
+        { // invalid channel
+            std::string sbbsAddressStr = "b0ca7b4afd7f0000fe6d24e8fd052ef04ff4bb2a230a81c8eeeb0dd0e55af766a91c6513e377fb39";
+            WALLET_CHECK(beam::wallet::CheckReceiverAddress(sbbsAddressStr) == false);
         }
 
     }
@@ -2180,7 +2195,6 @@ void TestKeyKeeper(IPrivateKeyKeeper2::Ptr externalKeyKeeper = {}, size_t index 
         {
             p.m_pKk = std::make_shared<MyKeeKeeper>(pKdf);
             Cast::Up<MyKeeKeeper>(*p.m_pKk).m_State.m_hvLast = 334U + i;
-            Cast::Up<MyKeeKeeper>(*p.m_pKk).m_State.Generate();
         }
         else
         {

@@ -71,12 +71,27 @@ namespace beam::wallet
 
     // @param SBBS address as string
     // Returns whether the address is a valid SBBS address i.e. a point on an ellyptic curve
-    bool check_receiver_address(const std::string& addr)
+    bool CheckReceiverAddress(const std::string& addr)
     {
         WalletID walletID;
         return
             walletID.FromHex(addr) &&
             walletID.IsValid();
+    }
+
+    void TestSenderAddress(const TxParameters& parameters, IWalletDB::Ptr walletDB)
+    {
+        const auto& myID = parameters.GetParameter<WalletID>(TxParameterID::MyID);
+        if (!myID)
+        {
+            throw InvalidTransactionParametersException("No MyID");
+        }
+
+        auto senderAddr = walletDB->getAddress(*myID);
+        if (!senderAddr || !senderAddr->isOwn() || senderAddr->isExpired())
+        {
+            throw SenderInvalidAddressException();
+        }
     }
 
     const char Wallet::s_szNextEvt[] = "NextUtxoEvent"; // any event, not just UTXO. The name is for historical reasons
@@ -235,6 +250,14 @@ namespace beam::wallet
         }
     }
 
+    void Wallet::VisitActiveTransaction(const TxVisitor& visitor)
+    {
+        for(const auto& it: m_ActiveTransactions)
+        {
+            visitor(it.first, it.second);
+        }
+    }
+
     void Wallet::ResumeAllTransactions()
     {
         auto txs = m_WalletDB->getTxHistory(TxType::ALL);
@@ -303,12 +326,9 @@ namespace beam::wallet
         }
     }
 
-    // Implementation of the INegotiatorGateway::confirm_outputs
-    // TODO: Not used anywhere, consider removing
-    void Wallet::confirm_outputs(const vector<Coin>& coins)
+    void Wallet::on_tx_failed(const TxID& txID)
     {
-        for (auto& coin : coins)
-            getUtxoProof(coin);
+        on_tx_completed(txID);
     }
 
     bool Wallet::MyRequestUtxo::operator < (const MyRequestUtxo& x) const
@@ -495,7 +515,7 @@ namespace beam::wallet
         }
     }
 
-    void Wallet::get_proof_shielded_output(const TxID& txId, ECC::Point serialPublic, ProofShildedOutputCallback&& callback)
+    void Wallet::get_proof_shielded_output(const TxID& txId, const ECC::Point& serialPublic, ProofShildedOutputCallback&& callback)
     {
         MyRequestProofShieldedOutp::Ptr pVal(new MyRequestProofShieldedOutp);
         pVal->m_callback = std::move(callback);
@@ -912,7 +932,7 @@ namespace beam::wallet
                     }
                     case proto::Event::Type::AssetCtl:
                     {
-                        proto::Event::AssetCtl assetEvt = Cast::Up<proto::Event::AssetCtl>(evt_);
+                        proto::Event::AssetCtl& assetEvt = Cast::Up<proto::Event::AssetCtl>(evt_);
                         m_This.ProcessEventAsset(assetEvt, m_Height);
                         return;
                     }
@@ -937,7 +957,7 @@ namespace beam::wallet
         
         uint32_t nCount = p.Proceed(r.m_Res.m_Events);
 
-        if (nCount < proto::Event::s_Max)
+        if (nCount < r.m_Max)
         {
             Block::SystemState::Full sTip;
             m_WalletDB->get_History().get_Tip(sTip);
@@ -1010,7 +1030,7 @@ namespace beam::wallet
 
     void Wallet::ProcessEventAsset(const proto::Event::AssetCtl& assetCtl, Height h)
     {
-        // since there is not asset id passed we ignore this event at the moment
+        // TODO
     }
 
     void Wallet::ProcessEventShieldedUtxo(const proto::Event::Shielded& shieldedEvt, Height h)
@@ -1383,19 +1403,12 @@ namespace beam::wallet
             return wallet::BaseTransaction::Ptr();
         }
 
-        return it->second->Create(*this, m_WalletDB, id);
+        return it->second->Create(BaseTransaction::TxContext(*this, m_WalletDB, id));
     }
 
     BaseTransaction::Ptr Wallet::ConstructTransactionFromParameters(const SetTxParameter& msg)
     {
-        auto it = m_TxCreators.find(msg.m_Type);
-        if (it == m_TxCreators.end())
-        {
-            LOG_WARNING() << msg.m_TxID << " Unsupported type of transaction: " << static_cast<int>(msg.m_Type);
-            return wallet::BaseTransaction::Ptr();
-        }
-
-        return it->second->Create(*this, m_WalletDB, msg.m_TxID);
+        return ConstructTransaction(msg.m_TxID, msg.m_Type);
     }
 
     BaseTransaction::Ptr Wallet::ConstructTransactionFromParameters(const TxParameters& parameters)
@@ -1428,7 +1441,7 @@ namespace beam::wallet
             }
         }
 
-        auto newTx = it->second->Create(*this, m_WalletDB, *parameters.GetTxID());
+        auto newTx = it->second->Create(BaseTransaction::TxContext(*this, m_WalletDB, *parameters.GetTxID()));
         ApplyTransactionParameters(newTx, completedParameters.Pack(), true);
         return newTx;
     }

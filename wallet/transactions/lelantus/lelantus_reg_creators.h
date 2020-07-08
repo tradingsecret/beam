@@ -1,4 +1,4 @@
-// Copyright 2020 The Beam Team
+// Copyright 2018 The Beam Team
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,24 +13,9 @@
 // limitations under the License.
 #pragma once
 
-#include <string>
+#include "wallet/core/wallet.h"
 
-namespace beam::wallet {
-    class Pipe
-    {
-        int _fd = 0;
-        FILE *_file = nullptr;
-    public:
-        explicit Pipe(int fd);
-        ~Pipe();
-
-        void notify(const std::string &message) const;
-        void notifyFailed() const;
-        void notifyAlive()  const;
-        void notifyListening() const;
-
-        static const int SyncFileDescriptor;
-        static const int HeartbeatFileDescriptor;
-        static const int HeartbeatInterval;
-    };
+namespace beam::wallet::lelantus
+{
+    void RegisterCreators(Wallet& wallet, bool withAssets);
 }

@@ -152,6 +152,8 @@ namespace beam
         const char* GENERATE_ELECTRUM_SEED = "generate_electrum_seed";
         const char* SELECT_SERVER_AUTOMATICALLY = "select_server_automatically";
         const char* ELECTRUM_ADDR = "electrum_addr";
+        const char* ADDRESSES_TO_RECEIVE = "addresses_to_receive";
+        const char* ADDRESSES_FOR_CHANGE = "addresses_for_change";
         const char* AMOUNT = "amount";
         const char* AMOUNT_FULL = "amount,a";
         const char* RECEIVER_ADDR = "receiver_addr";
@@ -166,6 +168,7 @@ namespace beam
         const char* RESET_ID = "reset_id";
         const char* ERASE_ID = "erase_id";
         const char* PRINT_TXO = "print_txo";
+        const char* MANUAL_ROLLBACK = "manual_rollback";
         const char* CHECKDB = "check_db";
         const char* VACUUM = "vacuum";
         const char* CRASH = "crash";
@@ -369,6 +372,7 @@ namespace beam
             (cli::RESET_ID, po::value<bool>()->default_value(false), "Reset self ID (used for network authentication). Must do if the node is cloned")
             (cli::ERASE_ID, po::value<bool>()->default_value(false), "Reset self ID (used for network authentication) and stop before re-creating the new one.")
             (cli::PRINT_TXO, po::value<bool>()->default_value(false), "Print TXO movements (create/spend) recognized by the owner key.")
+            (cli::MANUAL_ROLLBACK, po::value<Height>(), "Explicit rollback to height. The current consequent state will be forbidden (no automatic going up the same path)")
             (cli::CHECKDB, po::value<bool>()->default_value(false), "DB integrity check")
             (cli::VACUUM, po::value<bool>()->default_value(false), "DB vacuum (compact)")
             (cli::BBS_ENABLE, po::value<bool>()->default_value(true), "Enable SBBS messaging")
@@ -439,6 +443,8 @@ namespace beam
             (cli::GENERATE_ELECTRUM_SEED, "generate new electrum seed")
             (cli::SELECT_SERVER_AUTOMATICALLY, po::value<bool>(), "select electrum server automatically")
             (cli::ELECTRUM_ADDR, po::value<string>(), "set electrum wallet address")
+            (cli::ADDRESSES_TO_RECEIVE, po::value<Positive<uint32_t>>(), "number of electrum receiving addresses")
+            (cli::ADDRESSES_FOR_CHANGE, po::value<Positive<uint32_t>>(), "number of electrum change addresses")
             (cli::SWAP_WALLET_ADDR, po::value<string>(), "rpc address of the swap wallet")
             (cli::SWAP_WALLET_USER, po::value<string>(), "rpc user name for the swap wallet")
             (cli::SWAP_WALLET_PASS, po::value<string>(), "rpc password for the swap wallet")

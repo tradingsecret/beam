@@ -228,6 +228,12 @@ namespace beam::wallet
             return m_confirmHeight != MaxHeight && m_spentHeight == MaxHeight && !m_spentTxId;
         }
 
+        TxoID GetAnonymitySet(TxoID lastKnownShieldedOuts) const
+        {
+            // TODO: review this
+            return lastKnownShieldedOuts && (lastKnownShieldedOuts > m_ID) ? lastKnownShieldedOuts - m_ID : 0;
+        }
+
         ShieldedTxo::BaseKey m_Key;
         ShieldedTxo::User m_User;
 
@@ -255,7 +261,7 @@ namespace beam::wallet
     {
     public:
         explicit CannotGenerateSecretException()
-            : std::runtime_error("")
+            : std::runtime_error("CannotGenerateSecretException")
         {
         }
 
@@ -265,7 +271,7 @@ namespace beam::wallet
     {
     public:
         explicit DatabaseException(const std::string& message)
-            : std::runtime_error(message)
+            : std::runtime_error(message.length() ? message : "DatabaseException")
         {
         }
     };
@@ -784,6 +790,8 @@ namespace beam::wallet
                 AmountBig::Type Fee = 0U;
                 AmountBig::Type Unspent = 0U;
                 AmountBig::Type Shielded = 0U;
+                AmountBig::Type Linked = 0U;
+                AmountBig::Type Unlinked = 0U;
                 Height MinCoinHeight = 0;
             };
 
@@ -903,5 +911,7 @@ namespace beam::wallet
         void HookErrors();
         bool isMyAddress(
             const std::vector<WalletAddress>& myAddresses, const WalletID& wid);
+
+        bool IsShieldedCoinUnlinked(const IWalletDB& db, const ShieldedCoin& coin);
     }  // namespace storage
 }  // namespace beam::wallet

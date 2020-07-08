@@ -11,19 +11,17 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-#pragma once
+#include "lelantus_reg_creators.h"
+#include "unlink_transaction.h"
+#include "push_transaction.h"
+#include "pull_transaction.h"
 
-#include "wallet/core/common.h"
-#include "wallet/core/wallet_db.h"
-#include "wallet/core/base_transaction.h"
-
-namespace beam::wallet {
-    class AssetTransaction : public BaseTransaction
+namespace beam::wallet::lelantus
+{
+    void RegisterCreators(Wallet& wallet, bool withAssets)
     {
-    protected:
-        AssetTransaction(const TxContext& context);
-        bool Rollback(Height height) override;
-        bool BaseUpdate();
-        bool IsLoopbackTransaction() const;
-    };
+        wallet.RegisterTransactionType(TxType::UnlinkFunds, std::make_shared<UnlinkFundsTransaction::Creator>(withAssets));
+        wallet.RegisterTransactionType(TxType::PushTransaction, std::make_shared<PushTransaction::Creator>(withAssets));
+        wallet.RegisterTransactionType(TxType::PullTransaction, std::make_shared<PullTransaction::Creator>(withAssets));
+    }
 }

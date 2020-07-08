@@ -552,15 +552,31 @@ void Node::Processor::FlushInsanePeers()
 void Node::Processor::DeleteOutdated()
 {
 	TxPool::Fluff& txp = get_ParentObj().m_TxPool;
-	for (TxPool::Fluff::Queue::iterator it = txp.m_Queue.begin(); txp.m_Queue.end() != it; )
+
+    Height h = get_ParentObj().m_Cfg.m_RollbackLimit.m_Max;
+    std::setmin(h, Rules::get().MaxRollback);
+
+    if (m_Cursor.m_ID.m_Height > h)
+    {
+        h = m_Cursor.m_ID.m_Height - h;
+
+        while (!txp.m_setOutdated.empty())
+        {
+            TxPool::Fluff::Element& x = txp.m_setOutdated.begin()->get_ParentObj();
+            if (x.m_Outdated.m_Height > h)
+                break;
+
+            txp.Delete(x);
+        }
+    }
+
+	for (TxPool::Fluff::ProfitSet::iterator it = txp.m_setProfit.begin(); txp.m_setProfit.end() != it; )
 	{
 		TxPool::Fluff::Element& x = (it++)->get_ParentObj();
-		if (!x.m_pValue)
-			continue;
 		Transaction& tx = *x.m_pValue;
 
-		if (proto::TxStatus::Ok != ValidateTxContextEx(tx, x.m_Threshold.m_Height, true))
-			txp.Delete(x);
+		if (proto::TxStatus::Ok != ValidateTxContextEx(tx, x.m_Height, true))
+			txp.SetOutdated(x, m_Cursor.m_ID.m_Height);
 	}
 }
 
@@ -686,13 +702,25 @@ void Node::Processor::OnRolledBack()
 {
     LOG_INFO() << "Rolled back to: " << m_Cursor.m_ID;
 
-	// Delete shielded txs which referenced shielded outputs which were reverted
 	TxPool::Fluff& txp = get_ParentObj().m_TxPool;
-	for (TxPool::Fluff::Queue::iterator it = txp.m_Queue.begin(); txp.m_Queue.end() != it; )
+    while (!txp.m_setOutdated.empty())
+    {
+        TxPool::Fluff::Element& x = txp.m_setOutdated.rbegin()->get_ParentObj();
+        if (x.m_Outdated.m_Height <= m_Cursor.m_ID.m_Height)
+            break;
+
+        txp.SetOutdated(x, MaxHeight); // may be deferred by the next loop
+    }
+
+	// Shielded txs that referenced shielded outputs which were reverted - must be reprocessed
+	for (TxPool::Fluff::ProfitSet::iterator it = txp.m_setProfit.begin(); txp.m_setProfit.end() != it; )
 	{
 		TxPool::Fluff::Element& x = (it++)->get_ParentObj();
-		if (x.m_pValue && !IsShieldedInPool(*x.m_pValue))
-			txp.Delete(x);
+        if (!IsShieldedInPool(*x.m_pValue))
+        {
+            get_ParentObj().OnTransactionDeferred(std::move(x.m_pValue), nullptr, true);
+            get_ParentObj().m_TxPool.DeleteEmpty(x);
+        }
 	}
 
 	TxPool::Stem& txps = get_ParentObj().m_Dandelion;
@@ -777,6 +805,18 @@ void Node::Processor::get_ViewerKeys(ViewerKeys& vk)
     vk.m_nSh = static_cast<Key::Index>(get_ParentObj().m_Keys.m_vSh.size());
     if (vk.m_nSh)
         vk.m_pSh = &get_ParentObj().m_Keys.m_vSh.front();
+}
+
+Height Node::Processor::get_MaxAutoRollback()
+{
+    Height h = NodeProcessor::get_MaxAutoRollback();
+    if (m_Cursor.m_Full.m_Height >= Rules::HeightGenesis)
+    {
+        Timestamp ts_s = getTimestamp();
+        if (ts_s < m_Cursor.m_Full.m_TimeStamp + get_ParentObj().m_Cfg.m_RollbackLimit.m_TimeoutSinceTip_s)
+            std::setmin(h, get_ParentObj().m_Cfg.m_RollbackLimit.m_Max);
+    }
+    return h;
 }
 
 void Node::Processor::OnEvent(Height h, const proto::Event::Base& evt)
@@ -986,7 +1026,7 @@ void Node::InitIDs()
 void Node::RefreshOwnedUtxos()
 {
 	ECC::Hash::Processor hp;
-    hp << uint32_t(1); // change this whenever we change the format of the saved events
+    hp << uint32_t(2); // change this whenever we change the format of the saved events
 
 	ECC::Hash::Value hv0, hv1(Zero);
 
@@ -2646,9 +2686,12 @@ uint8_t Node::OnTransactionFluff(Transaction::Ptr&& ptxArg, const PeerID* pSende
 
 	TxPool::Fluff::Element* pNewTxElem = m_TxPool.AddValidTx(std::move(ptx), ctx, key.m_Key);
 
-	while (m_TxPool.m_setProfit.size() > m_Cfg.m_MaxPoolTransactions)
+	while (m_TxPool.m_setProfit.size() + m_TxPool.m_setOutdated.size() > m_Cfg.m_MaxPoolTransactions)
 	{
-		TxPool::Fluff::Element& txDel = m_TxPool.m_setProfit.rbegin()->get_ParentObj();
+        TxPool::Fluff::Element& txDel = m_TxPool.m_setOutdated.empty() ?
+            m_TxPool.m_setProfit.rbegin()->get_ParentObj() :
+            m_TxPool.m_setOutdated.begin()->get_ParentObj();
+
 		if (&txDel == pNewTxElem)
 			pNewTxElem = nullptr; // Anti-spam protection: in case the maximum pool capacity is reached - ensure this tx is any better BEFORE broadcasting ti
 
@@ -2806,7 +2849,7 @@ void Node::Peer::BroadcastTxs()
 
 		SetTxCursor(&itNext->get_ParentObj());
 
-		if (!m_pCursorTx->m_pValue)
+		if (!m_pCursorTx->m_pValue || m_pCursorTx->IsOutdated())
 			continue; // already deleted
 
 		proto::HaveTransaction msgOut;
@@ -3468,6 +3511,12 @@ void Node::Peer::OnMsg(proto::GetEvents&& msg)
         Height hLast = 0;
         uint32_t nCount = 0;
 
+        bool bSkipAssets = (proto::LoginFlags::Extension::get(m_LoginFlags) < 6);
+        static_assert(proto::LoginFlags::Extension::Minimum < 6); // remove this logic when older protocol won't be supported
+
+        // we'll send up to s_Max num of events, even to older clients, they won't complain
+        static_assert(proto::Event::s_Max > proto::Event::s_Max0);
+
         Serializer ser;
 
         for (db.EnumEvents(wlk, msg.m_HeightMin); wlk.MoveNext(); hLast = wlk.m_Height)
@@ -3477,6 +3526,17 @@ void Node::Peer::OnMsg(proto::GetEvents&& msg)
 
 			if (p.IsFastSync() && (wlk.m_Height > p.m_SyncData.m_h0))
 				break;
+
+            if (bSkipAssets)
+            {
+                Deserializer der;
+                der.reset(wlk.m_Body.p, wlk.m_Body.n);
+
+                proto::Event::Type::Enum eType;
+                der & eType;
+                if (proto::Event::Type::AssetCtl == eType)
+                    continue; // skip
+            }
 
             ser & wlk.m_Height;
             ser.WriteRaw(wlk.m_Body.p, wlk.m_Body.n);
@@ -3489,37 +3549,7 @@ void Node::Peer::OnMsg(proto::GetEvents&& msg)
     else
         LOG_WARNING() << "Peer " << m_RemoteAddr << " Unauthorized Utxo events request.";
 
-    if (proto::LoginFlags::Extension::get(m_LoginFlags) >= 4)
-    {
-        Send(msgOut);
-    }
-    else
-    {
-        // legacy client
-        struct MyParser
-            :public proto::Event::IGroupParser
-        {
-            proto::EventsLegacy m_msgOut;
-
-            virtual void OnEvent(proto::Event::Base& evt_) override
-            {
-                if (proto::Event::Type::Utxo != evt_.get_Type())
-                    return; // ignore
-                proto::Event::Utxo& evt = Cast::Up<proto::Event::Utxo>(evt_);
-
-                m_msgOut.m_Events.emplace_back();
-                proto::Event::Legacy& evt1 = m_msgOut.m_Events.back();
-
-                evt1.Import(evt);
-                evt1.m_Height = m_Height;
-            }
-
-        } parser;
-
-        parser.Proceed(msgOut.m_Events);
-
-        Send(parser.m_msgOut);
-    }
+    Send(msgOut);
 }
 
 void Node::Peer::OnMsg(proto::BlockFinalization&& msg)

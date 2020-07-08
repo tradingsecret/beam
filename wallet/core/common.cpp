@@ -158,6 +158,19 @@ namespace std
         return EncodeToHex(id);
     }
 
+     unsigned to_unsigned(const std::string& what, bool throws)
+     {
+        try
+        {
+            return boost::lexical_cast<unsigned>(what);
+        }
+        catch(...)
+        {
+            if (throws) throw;
+            return 0;
+        }
+     }
+
 #ifndef EMSCRIPTEN
     string to_string(const beam::AmountBig::Type& amount)
     {
@@ -226,8 +239,10 @@ namespace beam::wallet
 
     bool WalletID::IsValid() const
     {
+        BbsChannel channel;
+        m_Channel.Export(channel);
         Point::Native p;
-        return m_Pk.ExportNnz(p);
+        return m_Pk.ExportNnz(p) && channel < proto::Bbs::s_MaxWalletChannels;
     }
 
     boost::optional<PeerID> FromHex(const std::string& s)
@@ -488,7 +503,7 @@ namespace beam::wallet
         else // plain WalletID
         {
             WalletID walletID;
-            if (walletID.FromBuf(buffer))
+            if (walletID.FromBuf(buffer) && walletID.IsValid())
             {
                 auto result = boost::make_optional<TxParameters>({});
                 result->SetParameter(TxParameterID::PeerID, walletID);
@@ -1291,7 +1306,22 @@ namespace beam::wallet
         {
         }
         return {};
-
     }
 
+    std::string TimestampFile(const std::string& fileName)
+    {
+        size_t dotPos = fileName.find_last_of('.');
+
+        stringstream ss;
+        ss << fileName.substr(0, dotPos);
+        ss << getTimestamp();
+
+        if (dotPos != string::npos)
+        {
+            ss << fileName.substr(dotPos);
+        }
+
+        string timestampedPath = ss.str();
+        return timestampedPath;
+    }
 }  // namespace beam::wallet

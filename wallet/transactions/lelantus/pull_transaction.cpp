@@ -26,11 +26,9 @@ namespace beam::wallet::lelantus
             .SetParameter(TxParameterID::IsSender, false);
     }
 
-    BaseTransaction::Ptr PullTransaction::Creator::Create(INegotiatorGateway& gateway
-        , IWalletDB::Ptr walletDB
-        , const TxID& txID)
+    BaseTransaction::Ptr PullTransaction::Creator::Create(const TxContext& context)
     {
-        return BaseTransaction::Ptr(new PullTransaction(gateway, walletDB, txID, m_withAssets));
+        return BaseTransaction::Ptr(new PullTransaction(context, m_withAssets));
     }
 
     TxParameters PullTransaction::Creator::CheckAndCompleteParameters(const TxParameters& parameters)
@@ -39,11 +37,9 @@ namespace beam::wallet::lelantus
         return parameters;
     }
 
-    PullTransaction::PullTransaction(INegotiatorGateway& gateway
-        , IWalletDB::Ptr walletDB
-        , const TxID& txID
+    PullTransaction::PullTransaction(const TxContext& context
         , bool withAssets)
-        : BaseTransaction(gateway, walletDB, txID)
+        : BaseTransaction(context)
         , m_withAssets(withAssets)
     {
     }
@@ -76,18 +72,19 @@ namespace beam::wallet::lelantus
         {
             UpdateTxDescription(TxStatus::InProgress);
 
-            for (const auto& amount : m_TxBuilder->GetAmountList())
-            {
-                m_TxBuilder->GenerateUnlinkedCoin(amount);
-            }
-
             TxoID shieldedId = GetMandatoryParameter<TxoID>(TxParameterID::ShieldedOutputId);
             auto shieldedCoin = GetWalletDB()->getShieldedCoin(shieldedId);
+
+            bool isUnlinked = storage::IsShieldedCoinUnlinked(*GetWalletDB(), *shieldedCoin);
+            for (const auto& amount : m_TxBuilder->GetAmountList())
+            {
+                m_TxBuilder->GenerateCoin(amount, isUnlinked);
+            }
 
             const auto unitName = m_TxBuilder->IsAssetTx() ? kAmountASSET : "";
             const auto nthName  = m_TxBuilder->IsAssetTx() ? kAmountAGROTH : "";
 
-            LOG_INFO() << GetTxID() << " Extracting from shielded pool:"
+            LOG_INFO() << m_Context << " Extracting from shielded pool:"
                 << " ID - " << shieldedId << ", amount - " << PrintableAmount(shieldedCoin->m_value, false, unitName, nthName)
                 << ", receiving amount - " << PrintableAmount(m_TxBuilder->GetAmount(), false, unitName, nthName)
                 << " (fee: " << PrintableAmount(m_TxBuilder->GetFee()) << ")";
@@ -111,7 +108,7 @@ namespace beam::wallet::lelantus
                     Amount requiredAmount = m_TxBuilder->GetAmount() + m_TxBuilder->GetFee();
                     if (shieldedCoin->m_value < requiredAmount)
                     {
-                        LOG_ERROR() << GetTxID() << " The ShieldedCoin value("
+                        LOG_ERROR() << m_Context << " The ShieldedCoin value("
                                     << PrintableAmount(shieldedCoin->m_value)
                                     << ") is less than the required value(" << PrintableAmount(requiredAmount) << ")";
                         throw TransactionFailedException(false, TxFailureReason::NoInputs, "");
@@ -161,7 +158,7 @@ namespace beam::wallet::lelantus
             }
 
             // register TX
-            GetGateway().register_tx(GetTxID(), transaction);
+            GetGateway().register_tx(GetTxID(), transaction, GetSubTxID());
             return;
         }
 
@@ -203,7 +200,7 @@ namespace beam::wallet::lelantus
 
     void PullTransaction::RollbackTx()
     {
-        LOG_INFO() << GetTxID() << " Transaction failed. Rollback...";
+        LOG_INFO() << m_Context << " Transaction failed. Rollback...";
         GetWalletDB()->restoreShieldedCoinsSpentByTx(GetTxID());
         GetWalletDB()->deleteCoinsCreatedByTx(GetTxID());
     }
