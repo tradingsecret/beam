@@ -46,6 +46,71 @@ namespace beam::wallet
             return "0x" + s;
         }
 
+        void DumpCommonParameters(const IPrivateKeyKeeper2::Method::TxCommon& m)
+        {
+            using namespace nlohmann;
+            auto res = json
+            {
+                {"tx_common",
+                    {
+                        {"inputs", json::array()},
+
+                        {"outputs", json::array()},
+
+                        {"offset_sk", Hex(ECC::Scalar(m.m_kOffset).str())},
+                        {"kernel_parameters",
+                            {
+                                {"fee", m.m_pKernel->m_Fee},
+                                {"min_height", m.m_pKernel->m_Height.m_Min},
+                                {"max_height", m.m_pKernel->m_Height.m_Max},
+                                {"commitment",
+                                    {
+                                        {"x", Hex(m.m_pKernel->m_Commitment.m_X.str())},
+                                        {"y", m.m_pKernel->m_Commitment.m_Y}
+                                    }
+                                },
+                                {"signature",
+                                    {
+                                        {"nonce_pub",
+                                            {
+                                                {"x", Hex(m.m_pKernel->m_Signature.m_NoncePub.m_X.str())},
+                                                {"y", m.m_pKernel->m_Signature.m_NoncePub.m_Y}
+                                            }
+                                        },
+                                        {"k", Hex(m.m_pKernel->m_Signature.m_k.str())}
+                                    },
+
+                                }
+                            }
+                        }
+                    },
+                }
+            };
+
+            auto f = [](json& j, const std::vector<CoinID>& coins)
+            {
+                for (const auto& c : coins)
+                {
+                    j.push_back(
+                        {
+                           {"idx", c.m_Idx},
+                           {"type", int(c.m_Type)},
+                           {"sub_idx", c.m_SubIdx},
+                           {"amount", c.m_Value},
+                           {"asset_id", c.m_AssetID}
+                        }
+                    );
+                }
+            };
+
+            f(res["tx_common"]["outputs"], m.m_vOutputs);
+            f(res["tx_common"]["inputs"], m.m_vInputs);
+
+
+
+            std::cout << std::endl << res.dump() << std::endl;
+        }
+
         void DumpSenderParameters(const IPrivateKeyKeeper2::Method::SignSender& m)
         {
             using namespace nlohmann;
@@ -149,7 +214,7 @@ namespace beam::wallet
 
             auto& enumerate = enumerates.front();//*it;
 
-            if (enumerate.session != "null")
+            if (enumerate.session != "null" && !existingDevice)
             {
                 client->release(enumerate.session);
                 enumerate.session = "null";
@@ -172,16 +237,17 @@ namespace beam::wallet
                     {
                         LOG_INFO() << "TREZOR SUCCESS: " << child_cast<Message, Success>(msg).message();
                     });
-            }
-            try
-            {
-                trezor->init(enumerate);
-            }
-            catch (std::runtime_error e)
-            {
-                LOG_ERROR() << e.what();
-                return nullptr;
-            }
+
+                try
+                {
+                    trezor->init(enumerate);
+                }
+                catch (std::runtime_error e)
+                {
+                    LOG_ERROR() << e.what();
+                    return nullptr;
+                }
+            }           
 
             return trezor;
         }
@@ -746,6 +812,7 @@ namespace beam::wallet
 
         PushHandler(h);
         ShowUI();
+        //DumpCommonParameters(m);
         GetDevice()->call_BeamSignTransactionSplit(txCommon,
             [this, &m, h, txCommon](const Message& msg, std::string session, size_t queue_size) mutable
         {
@@ -809,7 +876,7 @@ namespace beam::wallet
                 deviceManager->callback_Failure([&](const Message& msg, std::string session, size_t queue_size)
                     {
                         auto message = child_cast<Message, Failure>(msg).message();
-
+                        HideUI();
                         if (m_Handlers.empty())
                         {
                             return;

@@ -84,6 +84,8 @@
 #define SHIELDED_COINS_NAME "ShieldedCoins"
 #define NOTIFICATIONS_NAME "notifications"
 #define EXCHANGE_RATES_NAME "exchangeRates"
+#define VOUCHERS_NAME "vouchers"
+#define COIN_CONFIRMATIONS_COUNT "confirmations_count"
 
 #define ENUM_VARIABLES_FIELDS(each, sep, obj) \
     each(name,  name,  TEXT UNIQUE, obj) sep \
@@ -185,6 +187,12 @@
     each(updateTime,    updateTime,     INTEGER,            obj)
 
 #define EXCHANGE_RATES_FIELDS ENUM_EXCHANGE_RATES_FIELDS(LIST, COMMA, )
+
+#define ENUM_VOUCHERS_FIELDS(each, sep, obj) \
+    each(WalletID,  WalletID,  BLOB NOT NULL, obj) sep \
+    each(Voucher,   Voucher,   BLOB NOT NULL UNIQUE, obj)
+
+#define VOUCHERS_FIELDS ENUM_VOUCHERS_FIELDS(LIST, COMMA, )
 
 namespace std
 {
@@ -596,6 +604,12 @@ namespace beam::wallet
                 bind(col, b);
             }
 
+            void bind(int col, const ShieldedTxo::Voucher& x)
+            {
+                const auto& b = _buffers.emplace_back(toByteBuffer(x));
+                bind(col, b);
+            }
+
             void bind(int col, const ShieldedTxo::User& x)
             {
                 bind(col, &x, sizeof(x));
@@ -689,6 +703,13 @@ namespace beam::wallet
             }
 
             void get(int col, ShieldedTxo::BaseKey& x)
+            {
+                ByteBuffer b;
+                get(col, b);
+                fromByteBuffer(b, x);
+            }
+
+            void get(int col, ShieldedTxo::Voucher& x)
             {
                 ByteBuffer b;
                 get(col, b);
@@ -864,7 +885,8 @@ namespace beam::wallet
         const char* SystemStateIDName = "SystemStateID";
         const char* LastUpdateTimeName = "LastUpdateTime";
         const int BusyTimeoutMs = 5000;
-        const int DbVersion   = 21;
+        const int DbVersion   = 22;
+        const int DbVersion21 = 21;
         const int DbVersion20 = 20;
         const int DbVersion19 = 19;
         const int DbVersion18 = 18;
@@ -926,9 +948,9 @@ namespace beam::wallet
         }
     }
 
-    Height Coin::get_Maturity() const
+    Height Coin::get_Maturity(Height offset/* = 0*/) const
     {
-        return IsMaturityValid() ? m_maturity : MaxHeight;
+        return IsMaturityValid() ? m_maturity + offset : MaxHeight;
     }
 
     bool Coin::operator==(const Coin& other) const
@@ -1145,7 +1167,7 @@ namespace beam::wallet
                 throwIfError(ret, db);
             }
         }
-    
+
         void CreateNotificationsTable(sqlite3* db)
         {
             const char* req = "CREATE TABLE " NOTIFICATIONS_NAME " (" ENUM_NOTIFICATION_FIELDS(LIST_WITH_TYPES, COMMA, ) ") WITHOUT ROWID;";
@@ -1206,6 +1228,15 @@ namespace beam::wallet
             int ret = sqlite3_exec(db, req, nullptr, nullptr, nullptr);
             throwIfError(ret, db);
         }
+
+        void CreateVouchersTable(sqlite3* db)
+        {
+            const char* req = "CREATE TABLE " VOUCHERS_NAME " (" ENUM_VOUCHERS_FIELDS(LIST_WITH_TYPES, COMMA, ) ");"
+                "CREATE INDEX WalletIDIndex ON " VOUCHERS_NAME "(WalletID);";
+            int ret = sqlite3_exec(db, req, nullptr, nullptr, nullptr);
+            throwIfError(ret, db);
+        }
+
 
         void OpenAndMigrateIfNeeded(const string& path, sqlite3** db, const SecString& password)
         {
@@ -1319,6 +1350,7 @@ namespace beam::wallet
         CreateShieldedCoinsTable(db);
         CreateNotificationsTable(db);
         CreateExchangeRatesTable(db);
+        CreateVouchersTable(db);
     }
 
     std::shared_ptr<WalletDB>  WalletDB::initBase(const string& path, const SecString& password, bool separateDBForPrivateData)
@@ -1772,6 +1804,11 @@ namespace beam::wallet
                 case DbVersion20:
                     LOG_INFO() << "Converting DB from format 20...";
                     MigrateAssetsFrom20(walletDB->_db);
+                    // no break
+
+                case DbVersion21:
+                    LOG_INFO() << "Converting DB from format 21...";
+                    CreateVouchersTable(db);
                     storage::setVar(*walletDB, Version, DbVersion);
                     // no break
 
@@ -1854,6 +1891,7 @@ namespace beam::wallet
 
             }
         }
+        walletDB->getVarRaw(COIN_CONFIRMATIONS_COUNT, &walletDB->m_coinConfirmationsOffset, sizeof(uint32_t));
         walletDB->m_Initialized = true;
         return static_pointer_cast<IWalletDB>(walletDB);
     }
@@ -2204,13 +2242,7 @@ namespace beam::wallet
     void IWalletDB::get_SbbsWalletID(ECC::Scalar::Native& sk, WalletID& wid, uint64_t ownID)
     {
         get_SbbsPeerID(sk, wid.m_Pk, ownID);
-
-        // derive the channel from the address
-        BbsChannel ch;
-        wid.m_Pk.ExportWord<0>(ch);
-        ch %= proto::Bbs::s_MaxWalletChannels;
-
-        wid.m_Channel = ch;
+        wid.SetChannelFromPk();
     }
 
     void IWalletDB::get_SbbsWalletID(WalletID& wid, uint64_t ownID)
@@ -2589,6 +2621,17 @@ namespace beam::wallet
         sqlite::Statement stm(this, "DELETE FROM " STORAGE_NAME ";");
         stm.step();
         notifyCoinsChanged(ChangeAction::Reset, {});
+    }
+
+    void WalletDB::setCoinConfirmationsOffset(uint32_t offset)
+    {
+        setVarRaw(COIN_CONFIRMATIONS_COUNT, &offset, sizeof(uint32_t));
+        m_coinConfirmationsOffset = offset;
+    }
+
+    uint32_t WalletDB::getCoinConfirmationsOffset() const
+    {
+        return m_coinConfirmationsOffset;
     }
 
     bool WalletDB::findCoin(Coin& coin)
@@ -3700,6 +3743,46 @@ namespace beam::wallet
         }
     }
 
+    boost::optional<ShieldedTxo::Voucher> WalletDB::grabVoucher(const WalletID& peerID)
+    {
+        boost::optional<ShieldedTxo::Voucher> res;
+        sqlite::Statement stm(this, "SELECT rowid, Voucher FROM " VOUCHERS_NAME " WHERE WalletID=?1;");
+        stm.bind(1, peerID);
+
+        if (stm.step())
+        {
+            res.emplace();
+            int rowID = 0;
+            stm.get(0, rowID);
+            stm.get(1, *res);
+            
+            sqlite::Statement delStm(this, "DELETE FROM " VOUCHERS_NAME " WHERE rowid=?1;");
+            delStm.bind(1, rowID);
+            delStm.step();
+        }
+        return res;
+    }
+
+    void WalletDB::saveVoucher(const ShieldedTxo::Voucher& v, const WalletID& walletID)
+    {
+        sqlite::Statement stm(this, "INSERT INTO " VOUCHERS_NAME " (" ENUM_VOUCHERS_FIELDS(LIST, COMMA, ) ") VALUES(?,?);");
+        stm.bind(1, walletID);
+        stm.bind(2, v);
+        stm.step();
+    }
+
+    size_t WalletDB::getVoucherCount(const WalletID& peerID) const
+    {
+        int res = 0;
+        sqlite::Statement stm(this, "SELECT COUNT(Voucher) FROM " VOUCHERS_NAME " WHERE WalletID=?1;");
+        stm.bind(1, peerID);
+        if (stm.step())
+        {
+            stm.get(0, res);
+        }
+        return size_t(res);
+    }
+
     void WalletDB::Subscribe(IWalletDbObserver* observer)
     {
         if (std::find(m_subscribers.begin(), m_subscribers.end(), observer) == m_subscribers.end())
@@ -4438,6 +4521,8 @@ namespace beam::wallet
         void DeduceStatus(const IWalletDB& walletDB, Coin& c, Height hTop)
         {
             c.m_status = GetCoinStatus(walletDB, c, hTop);
+            if (c.m_status == Coin::Status::Available && c.m_confirmHeight > hTop - walletDB.getCoinConfirmationsOffset())
+                c.m_status = Coin::Status::Maturing;
         }
 
         bool IsOngoingTx(const IWalletDB& walletDB, const boost::optional<TxID>& txID)

@@ -90,7 +90,7 @@ namespace beam::wallet
         bool m_isUnlinked = false;
 
         bool IsMaturityValid() const; // is/was the UTXO confirmed?
-        Height get_Maturity() const; // would return MaxHeight unless the UTXO was confirmed
+        Height get_Maturity(Height offset = 0) const; // would return MaxHeight unless the UTXO was confirmed
         
         std::string getStatusString() const;
         static boost::optional<Coin::ID> FromString(const std::string& str);
@@ -388,6 +388,8 @@ namespace beam::wallet
         virtual void removeCoins(const std::vector<Coin::ID>&) = 0;
         virtual bool findCoin(Coin& coin) = 0;
         virtual void clearCoins() = 0;
+        virtual void setCoinConfirmationsOffset(uint32_t offset) = 0;
+        virtual uint32_t getCoinConfirmationsOffset() const = 0;
 
         // Generic visitors
         virtual void visitCoins(std::function<bool(const Coin& coin)> func) = 0;
@@ -488,6 +490,11 @@ namespace beam::wallet
         virtual std::vector<ExchangeRate> getExchangeRates() const = 0;
         virtual void saveExchangeRate(const ExchangeRate&) = 0;
 
+        // Vouchers management
+        virtual boost::optional<ShieldedTxo::Voucher> grabVoucher(const WalletID& peerID) = 0; // deletes voucher from DB
+        virtual void saveVoucher(const ShieldedTxo::Voucher& v, const WalletID& walletID) = 0;
+        virtual size_t getVoucherCount(const WalletID& peerID) const = 0;
+
         void addStatusInterpreterCreator(TxType txType, TxStatusInterpreter::Creator interpreterCreator);
         TxStatusInterpreter getStatusInterpreter(const TxParameters& txParams) const;
 
@@ -540,6 +547,8 @@ namespace beam::wallet
         void removeCoins(const std::vector<Coin::ID>&) override;
         bool findCoin(Coin& coin) override;
         void clearCoins() override;
+        void setCoinConfirmationsOffset(uint32_t offset) override;
+        uint32_t getCoinConfirmationsOffset() const override;
 
         void visitCoins(std::function<bool(const Coin& coin)> func) override;
         void visitAssets(std::function<bool(const WalletAsset& info)> func) override;
@@ -628,6 +637,10 @@ namespace beam::wallet
         std::vector<ExchangeRate> getExchangeRates() const override;
         void saveExchangeRate(const ExchangeRate&) override;
 
+        boost::optional<ShieldedTxo::Voucher> grabVoucher(const WalletID& peerID) override;
+        void saveVoucher(const ShieldedTxo::Voucher& v, const WalletID& walletID) override;
+        size_t getVoucherCount(const WalletID& peerID) const override;
+
     private:
         static std::shared_ptr<WalletDB> initBase(const std::string& path, const SecString& password, bool separateDBForPrivateData);
         void storeOwnerKey();
@@ -702,6 +715,7 @@ namespace beam::wallet
 
         struct LocalKeyKeeper;
         LocalKeyKeeper* m_pLocalKeyKeeper = nullptr;
+        uint32_t m_coinConfirmationsOffset = 0;
     };
 
     namespace storage
