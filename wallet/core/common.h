@@ -91,7 +91,7 @@ namespace beam::wallet
     };
 #pragma pack (pop)
 
-    boost::optional<PeerID> FromHex(const std::string& s);
+    boost::optional<PeerID> GetPeerIDFromHex(const std::string& s);
 
     bool CheckReceiverAddress(const std::string& addr);
 
@@ -166,13 +166,14 @@ namespace beam::wallet
     MACRO(KeyKeeperUserAbort,            40, "Aborted by the user") \
     MACRO(AssetExists,                   41, "Asset has been already registered") \
     MACRO(InvalidAssetOwnerId,           42, "Invalid asset owner id") \
-    MACRO(AssetsDisabled,                43, "Asset transactions are disabled in the wallet") \
+    MACRO(AssetsDisabledInWallet,        43, "Asset transactions are disabled in the wallet") \
     MACRO(NoVouchers,                    44, "You have no vouchers to insert coins to lelentus") \
     MACRO(AssetsDisabledFork2,           45, "Asset transactions are not available until fork2") \
     MACRO(KeyKeeperNoSlots,              46, "Key keeper out of slots") \
     MACRO(ExtractFeeTooBig,              47, "Cannot extract shielded coin, fee is to big.") \
     MACRO(AssetsDisabledReceiver,        48, "Asset transactions are disabled in the receiver wallet") \
-    MACRO(Count,                         49, "PLEASE KEEP THIS ALWAYS LAST")
+    MACRO(AssetsDisabledInRules,         49, "Asset transactions are disabled in blockchain configuration") \
+    MACRO(Count,                         50, "PLEASE KEEP THIS ALWAYS LAST")
 
     enum TxFailureReason : int32_t
     {
@@ -265,6 +266,7 @@ namespace beam::wallet
     MACRO(Message,                         5,   ByteBuffer) \
     MACRO(MyID,                            6,   WalletID) \
     MACRO(PeerID,                          7,   WalletID) \
+    MACRO(IsPermanentPeerID,               8,   WalletID) \
     MACRO(CreateTime,                      10,  Timestamp) \
     MACRO(IsInitiator,                     11,  bool) \
     MACRO(PeerMaxHeight,                   12,  Height) \
@@ -309,7 +311,6 @@ namespace beam::wallet
     MACRO(OriginalToken,                   121, std::string) \
     /* Lelantus */ \
     MACRO(ShieldedOutputId,                122, TxoID) \
-    MACRO(WindowBegin,                     123, TxoID) \
     MACRO(ShieldedVoucherList,             124, ShieldedVoucherList) \
     /* Version */ \
     MACRO(ClientVersion,                   126, std::string) \
@@ -342,8 +343,6 @@ namespace beam::wallet
 
         UserConfirmationToken = 143,
 
-        ChangeAsset = 149,
-        ChangeBeam = 150,
         Status = 151,
         KernelID = 152,
         MyAddressID = 158, // in case the address used in the tx is eventually deleted, the user should still be able to prove it was owned
@@ -351,17 +350,19 @@ namespace beam::wallet
         PartialSignature = 159,
 
         SharedBlindingFactor = 160,
-        MyNonce = 162,
+        AggregateSignature = 161,
         NonceSlot = 163,
         PublicNonce = 164,
         PublicExcess = 165,
-        SharedBulletProof = 171,
+        MutualTxState = 166,
         SharedCoinID = 172,
-        SharedSeed = 173,
+        SharedCommitment = 174,
 
         Inputs = 180,
+        InputsShielded = 181,
         InputCoins = 183,
         OutputCoins = 184,
+        InputCoinsShielded = 185,
         Outputs = 190,
 
         Kernel = 200,
@@ -532,8 +533,6 @@ namespace beam::wallet
             , m_txType{ txType }
             , m_amount{ amount }
             , m_fee{ fee }
-            , m_changeBeam{0}
-            , m_changeAsset{0}
             , m_assetId{assetId}
             , m_minHeight{ minHeight }
             , m_peerId{ peerId }
@@ -566,8 +565,6 @@ namespace beam::wallet
         wallet::TxType m_txType = wallet::TxType::Simple;
         Amount m_amount = 0;
         Amount m_fee = 0;
-        Amount m_changeBeam = 0;
-        Amount m_changeAsset = 0;
         Asset::ID m_assetId = Asset::s_InvalidID;
         std::string m_assetMeta;
         Height m_minHeight = 0;
@@ -592,8 +589,6 @@ namespace beam::wallet
             TxParameterID::CreateTime,
             TxParameterID::IsSender,
             TxParameterID::Message,
-            TxParameterID::ChangeBeam,
-            TxParameterID::ChangeAsset,
             TxParameterID::ModifyTime,
             TxParameterID::Status,
             TxParameterID::KernelID,
@@ -771,6 +766,10 @@ namespace beam::wallet
 
     // add timestamp to the file name
     std::string TimestampFile(const std::string& fileName);
+
+    extern bool g_AssetsEnabled; // global flag
+    TxFailureReason CheckAssetsEnabled(Height h);
+
 }    // beam::wallet
 
 namespace beam

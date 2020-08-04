@@ -168,6 +168,7 @@ namespace beam
         const char* RESET_ID = "reset_id";
         const char* ERASE_ID = "erase_id";
         const char* PRINT_TXO = "print_txo";
+        const char* PRINT_ROLLBACK_STATS = "print_rollback_stats";
         const char* MANUAL_ROLLBACK = "manual_rollback";
         const char* CHECKDB = "check_db";
         const char* VACUUM = "vacuum";
@@ -314,7 +315,6 @@ namespace beam
         const char* EXTRACT_FROM_POOL = "extract_from_pool";
         const char* SHIELDED_UTXOS = "shielded_utxos";
         const char* SHIELDED_ID = "shielded_id";
-        const char* WINDOW_BEGIN = "window_begin";
         const char* SHIELDED_TX_HISTORY = "shielded_tx_history";
 
         // Defaults
@@ -375,6 +375,7 @@ namespace beam
             (cli::RESET_ID, po::value<bool>()->default_value(false), "Reset self ID (used for network authentication). Must do if the node is cloned")
             (cli::ERASE_ID, po::value<bool>()->default_value(false), "Reset self ID (used for network authentication) and stop before re-creating the new one.")
             (cli::PRINT_TXO, po::value<bool>()->default_value(false), "Print TXO movements (create/spend) recognized by the owner key.")
+            (cli::PRINT_ROLLBACK_STATS, po::value<bool>()->default_value(false), "Analyze and print recent reverted branches, check if there were double-spends.")
             (cli::MANUAL_ROLLBACK, po::value<Height>(), "Explicit rollback to height. The current consequent state will be forbidden (no automatic going up the same path)")
             (cli::CHECKDB, po::value<bool>()->default_value(false), "DB integrity check")
             (cli::VACUUM, po::value<bool>()->default_value(false), "DB vacuum (compact)")
@@ -485,12 +486,12 @@ namespace beam
             (cli::LASER_CHANNEL_ID, po::value<string>(), "laser channel ID");
 #endif  // BEAM_LASER_SUPPORT
 
-        po::options_description lelantus_options("Lelantus-MW");
-        lelantus_options.add_options()
-            (cli::SHIELDED_UTXOS, "print all shielded UTXO info from the pool")
-            (cli::SHIELDED_ID, po::value<Nonnegative<TxoID>>(), "shielded UTXO ID")
-            (cli::WINDOW_BEGIN, po::value<Nonnegative<TxoID>>(), "window begin")
-            (cli::SHIELDED_TX_HISTORY, "print Lelantus-MW transaction history");
+        // Basic lelantus operations are disabled starting from v5.1
+        // po::options_description lelantus_options("Lelantus-MW");
+        // lelantus_options.add_options()
+        //    (cli::SHIELDED_UTXOS, "print all shielded UTXO info from the pool")
+        //    (cli::SHIELDED_ID, po::value<Nonnegative<TxoID>>(), "shielded UTXO ID")
+        //    (cli::SHIELDED_TX_HISTORY, "print Lelantus-MW transaction history");
 
         po::options_description options{ "OPTIONS" };
         po::options_description visible_options{ "OPTIONS" };
@@ -513,7 +514,8 @@ namespace beam
             options.add(wallet_options);
             options.add(wallet_treasury_options);
             options.add(swap_options);
-            options.add(lelantus_options);
+            // Basic lelantus operations are disabled starting from v5.1
+            // options.add(lelantus_options);
 
             if(Rules::get().CA.Enabled)
             {
@@ -522,7 +524,8 @@ namespace beam
 
             visible_options.add(wallet_options);
             visible_options.add(swap_options);
-             visible_options.add(lelantus_options);
+            // Basic lelantus operations are disabled starting from v5.1
+            // visible_options.add(lelantus_options);
 
             if(Rules::get().CA.Enabled)
             {

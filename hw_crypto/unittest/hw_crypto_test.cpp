@@ -750,6 +750,16 @@ void KeyKeeperHwEmu::CidCvt(BeamCrypto_CoinID& cid2, const CoinID& cid)
 	cid2.m_Amount = cid.m_Value;
 }
 
+KeyKeeperHwEmu::Status::Type KeyKeeperHwEmu::InvokeSync(Method::CreateInputShielded& m)
+{
+	return Status::NotImplemented;
+}
+
+KeyKeeperHwEmu::Status::Type KeyKeeperHwEmu::InvokeSync(Method::CreateVoucherShielded& m)
+{
+	return Status::NotImplemented;
+}
+
 KeyKeeperHwEmu::Status::Type KeyKeeperHwEmu::InvokeSync(Method::CreateOutput& m)
 {
 	if (m.m_hScheme < Rules::get().pForks[1].m_Height)
@@ -845,6 +855,11 @@ KeyKeeperHwEmu::Status::Type KeyKeeperHwEmu::InvokeSync(Method::SignSender& m)
 	}
 
 	return static_cast<Status::Type>(nRet);
+}
+
+KeyKeeperHwEmu::Status::Type KeyKeeperHwEmu::InvokeSync(Method::SignSendShielded& m)
+{
+	return Status::NotImplemented;
 }
 
 KeyKeeperHwEmu::Status::Type KeyKeeperHwEmu::InvokeSync(Method::SignSplit& m)

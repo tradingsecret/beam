@@ -1011,6 +1011,19 @@ namespace beam
 		Sign_(sk, skAsset);
 	}
 
+	void TxKernelAssetControl::get_Sk(ECC::Scalar::Native& sk, Key::IKdf& kdf)
+	{
+		m_Commitment = Zero;
+		UpdateMsg();
+
+		ECC::Hash::Processor()
+			<< "ac.sk"
+			<< m_Msg
+			>> m_Msg;
+
+		kdf.DeriveKey(sk, m_Msg);
+	}
+
 	/////////////
 	// TxKernelAssetEmit
 	void TxKernelAssetEmit::HashSelfForMsg(ECC::Hash::Processor& hp) const
@@ -1239,8 +1252,6 @@ namespace beam
 
 	void TxKernelShieldedInput::Sign(Lelantus::Prover& p, Asset::ID aid, bool bHideAssetAlways /* = false */)
 	{
-		UpdateMsg();
-
 		ECC::Oracle oracle;
 		oracle << m_Msg;
 
@@ -1255,12 +1266,13 @@ namespace beam
 			<< w.m_L
 			<< w.m_V
 			<< w.m_R
+			<< w.m_R_Output
 			<< w.m_SpendSk
 			>> hvSeed.V;
 
 		ECC::NonceGenerator("krn.sh.i")
 			<< hvSeed.V
-			>> w.m_R_Output;
+			>> hvSeed.V;
 
 		ECC::Point::Native hGen;
 		if (aid)

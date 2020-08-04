@@ -46,8 +46,6 @@ namespace beam::wallet
         Amount receivingChange = 0;
         Amount sending = 0;
         Amount maturing = 0;
-        Amount linked = 0;
-        Amount unlinked = 0;
         Amount shielded = 0;
 
         struct
@@ -76,7 +74,6 @@ namespace beam::wallet
         virtual ~WalletClient();
 
         void start( std::map<Notification::Type,bool> activeNotifications,
-                    bool withAssets = false,
                     bool isSecondCurrencyEnabled = false,
                     std::shared_ptr<std::unordered_map<TxType, BaseTransaction::Creator::Ptr>> txCreators = nullptr);
 
@@ -89,6 +86,8 @@ namespace beam::wallet
         size_t getUnreadNotificationsCount() const;
         bool isConnectionTrusted() const;
         ByteBuffer generateVouchers(uint64_t ownID, size_t count) const;
+        void setCoinConfirmationsOffset(uint32_t offset);
+        uint32_t getCoinConfirmationsOffset() const;
 
         /// INodeConnectionObserver implementation
         void onNodeConnectionFailed(const proto::NodeConnection::DisconnectReason&) override;
@@ -120,6 +119,7 @@ namespace beam::wallet
         virtual void onAddressesChanged(ChangeAction, const std::vector<WalletAddress>& addresses) {}
         virtual void onAddresses(bool own, const std::vector<WalletAddress>& addresses) {}
         virtual void onGeneratedNewAddress(const WalletAddress& walletAddr) {}
+        virtual void onGetAddress(const WalletID& id, const boost::optional<WalletAddress>& address) {}
         virtual void onSwapParamsLoaded(const beam::ByteBuffer& params) {}
         virtual void onNewAddressFailed() {}
         virtual void onNodeConnectionChanged(bool isNodeConnected) {}
@@ -151,6 +151,7 @@ namespace beam::wallet
         void onTransactionChanged(ChangeAction action, const std::vector<TxDescription>& items) override;
         void onSystemStateChanged(const Block::SystemState::ID& stateID) override;
         void onAddressChanged(ChangeAction action, const std::vector<WalletAddress>& items) override;
+        void onShieldedCoinsChanged(ChangeAction, const std::vector<ShieldedCoin>& coins) override;
         void onSyncProgress(int done, int total) override;
         void onOwnedNode(const PeerID& id, bool connected) override;
 
@@ -177,6 +178,7 @@ namespace beam::wallet
         void deleteAddress(const WalletID& id) override;
         void updateAddress(const WalletID& id, const std::string& name, WalletAddress::ExpirationStatus status) override;
         void activateAddress(const WalletID& id) override;
+        void getAddress(const WalletID& id) override;
         void setNodeAddress(const std::string& addr) override;
         void changeWalletPassword(const SecString& password) override;
         void getNetworkStatus() override;

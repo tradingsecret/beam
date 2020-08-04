@@ -31,6 +31,7 @@ namespace
     using namespace beam::wallet;
 
     const char kSwapAmountToLowError[] = "The swap amount must be greater than the redemption fee.";
+    const char kBeamAmountToLowError[] = "\'beam_amount\' must be greater than \"beam_fee\".";
     const char kSwapNotEnoughtSwapCoins[] = "There is not enough funds to complete the transaction.";
 
     void checkIsEnoughtBeamAmount(IWalletDB::Ptr walletDB, Amount beamAmount, Amount beamFee)
@@ -189,10 +190,9 @@ namespace beam::wallet
 {
     WalletApiHandler::WalletApiHandler(
         IWalletData& walletData
-        , WalletApi::ACL acl
-        , bool withAssets)
+        , WalletApi::ACL acl)
         : _walletData(walletData)
-        , _api(*this, withAssets, acl)
+        , _api(*this, acl)
     {
     }
 
@@ -616,6 +616,19 @@ namespace beam::wallet
         doResponse(id, resp);
     }
 
+    void WalletApiHandler::onMessage(const JsonRpcId& id, const SetConfirmationsCount& data)
+    {
+        auto walletDB = _walletData.getWalletDBPtr();
+        walletDB->setCoinConfirmationsOffset(data.count);
+        doResponse(id, GetConfirmationsCount::Response{ walletDB->getCoinConfirmationsOffset() });
+    }
+
+    void WalletApiHandler::onMessage(const JsonRpcId& id, const GetConfirmationsCount& data)
+    {
+        auto walletDB = _walletData.getWalletDBPtr();
+        doResponse(id, GetConfirmationsCount::Response{ walletDB->getCoinConfirmationsOffset() });
+    }
+
     void WalletApiHandler::onMessage(const JsonRpcId& id, const TxAssetInfo& data)
     {
         LOG_DEBUG() << " AssetInfo" << "(id = " << id << " asset_id = "
@@ -812,6 +825,7 @@ namespace beam::wallet
         }
 
         GetUtxo::Response response;
+        response.confirmations_count = walletDB->getCoinConfirmationsOffset();
         walletDB->visitCoins([&response, &data](const Coin& c)->bool {
             if(!data.withAssets && c.isAsset())
             {
@@ -1109,6 +1123,18 @@ namespace beam::wallet
 
             Amount swapFeeRate = data.swapFeeRate ? data.swapFeeRate : GetSwapFeeRate(walletDB, data.swapCoin);
 
+            if (data.beamAmount <= data.beamFee)
+            {
+                doError(id, ApiError::InvalidJsonRpc, kBeamAmountToLowError);
+                return;
+            }
+
+            if (!IsSwapAmountValid(data.swapCoin, data.swapAmount, swapFeeRate))
+            {
+                doError(id, ApiError::InvalidJsonRpc, kSwapAmountToLowError);
+                return;
+            }
+            
             if (data.isBeamSide)
             {
                 checkIsEnoughtBeamAmount(walletDB, data.beamAmount, data.beamFee);
@@ -1120,13 +1146,6 @@ namespace beam::wallet
                 if (!isEnought)
                 {
                     doError(id, ApiError::InvalidJsonRpc, kSwapNotEnoughtSwapCoins);
-                    return;
-                }
-
-                bool isSwapAmountValid = IsSwapAmountValid(data.swapCoin, data.swapAmount, swapFeeRate);
-                if (!isSwapAmountValid)
-                {
-                    doError(id, ApiError::InvalidJsonRpc, kSwapAmountToLowError);
                     return;
                 }
             }
@@ -1325,6 +1344,12 @@ namespace beam::wallet
 
             Amount swapFeeRate = data.swapFeeRate ? data.swapFeeRate : GetSwapFeeRate(walletDB, *swapCoin);
 
+            if (*beamAmount <= data.beamFee)
+            {
+                doError(id, ApiError::InvalidJsonRpc, kBeamAmountToLowError);
+                return;
+            }
+
             if (!IsSwapAmountValid(*swapCoin, *swapAmount, swapFeeRate))
             {
                 doError(id, ApiError::InvalidJsonRpc, kSwapAmountToLowError);
@@ -1335,11 +1360,6 @@ namespace beam::wallet
 
             if (*isBeamSide)
             {
-                if (*beamAmount < data.beamFee)
-                {
-                    doError(id, ApiError::InvalidJsonRpc, "\'beam_amount\' must be greater than \"beam_fee\".");
-                    return;
-                }
                 checkIsEnoughtBeamAmount(walletDB, *beamAmount, data.beamFee);
             }
             else

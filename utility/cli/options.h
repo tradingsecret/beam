@@ -68,6 +68,7 @@ namespace beam
         extern const char* RESET_ID;
         extern const char* ERASE_ID;
         extern const char* PRINT_TXO;
+        extern const char* PRINT_ROLLBACK_STATS;
         extern const char* MANUAL_ROLLBACK;
         extern const char* CHECKDB;
         extern const char* VACUUM;
@@ -214,7 +215,6 @@ namespace beam
         extern const char* EXTRACT_FROM_POOL;
         extern const char* SHIELDED_UTXOS;
         extern const char* SHIELDED_ID;
-        extern const char* WINDOW_BEGIN;
         extern const char* SHIELDED_TX_HISTORY;
         extern const char* VOUCHER_COUNT;
 

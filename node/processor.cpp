@@ -1721,8 +1721,11 @@ Height NodeProcessor::RaiseFossil(Height hTrg)
 		{
 			if (NodeDB::StateFlags::Active & m_DB.GetStateFlags(ws.m_Sid.m_Row))
 				m_DB.DelStateBlockPPR(ws.m_Sid.m_Row);
-			else
-				DeleteBlock(ws.m_Sid.m_Row);
+			//else
+			//	DeleteBlock(ws.m_Sid.m_Row);
+
+			// Don't delete non-active blocks! For non-archieve nodes the whole abandoned branch will eventually be deleted.
+			// For archieve node - keep abandoned blocks, to be able to analyze them later.
 
 			hRet++;
 		}
@@ -2525,28 +2528,23 @@ void NodeProcessor::Recognize(const TxKernelShieldedOutput& v, Height h, uint32_
 	{
 		const ShieldedTxo& txo = v.m_Txo;
 
-		ShieldedTxo::Data::TicketParams sp;
-		if (!sp.Recover(txo.m_Ticket, vk.m_pSh[nIdx]))
+		ShieldedTxo::Data::Params pars;
+		if (!pars.m_Ticket.Recover(txo.m_Ticket, vk.m_pSh[nIdx]))
 			continue;
 
 		ECC::Oracle oracle;
 		oracle << v.m_Msg;
 
-		ShieldedTxo::Data::OutputParams op;
-		if (!op.Recover(txo, sp.m_SharedSecret, oracle))
+		if (!pars.m_Output.Recover(txo, pars.m_Ticket.m_SharedSecret, oracle))
 			continue;
 
 		proto::Event::Shielded evt;
-		evt.m_ID = nID;
-		evt.m_Value = op.m_Value;
-		evt.m_AssetID = op.m_AssetID;
-		evt.m_User = op.m_User;
-		evt.m_Key.m_nIdx = nIdx;
-		evt.m_Key.m_IsCreatedByViewer = sp.m_IsCreatedByViewer;
-		evt.m_Key.m_kSerG = sp.m_pK[0];
+		evt.m_TxoID = nID;
+		pars.ToID(evt.m_CoinID);
+		evt.m_CoinID.m_Key.m_nIdx = nIdx;
 		evt.m_Flags = proto::Event::Flags::Add;
 
-		EventKey::Shielded key = sp.m_SpendPk;
+		EventKey::Shielded key = pars.m_Ticket.m_SpendPk;
 		key.m_Y |= EventKey::s_FlagShielded;
 
 		AddEvent(h, EventKey::s_IdxKernel + nKrnIdx, evt, key);
