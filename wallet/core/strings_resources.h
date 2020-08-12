@@ -167,13 +167,11 @@ namespace beam
     extern const char kWalletSummaryFieldAvaliableFee[];
     extern const char kWalletSummaryFieldTotalFee[];
     extern const char kWalletSummaryFieldTotalUnspent[];
-    extern const char kWalletSummaryFieldShielded[];
     extern const char kCoinsTableHeadFormat[];
     extern const char kCoinColumnId[];
     extern const char kCoinColumnMaturity[];
     extern const char kCoinColumnStatus[];
     extern const char kCoinColumnType[];
-    extern const char kCoinColumnIsUnlinked[];
     extern const char kCoinsTableFormat[];
     extern const char kCoinConfirmationsCount[];
     // Tx history
@@ -235,8 +233,6 @@ namespace beam
     extern const char kErrorAssetNotFound[];
     extern const char kErrorAssetNotOwned[];
     extern const char kErrorAssetLoadMeta[];
-    extern const char kErrorAssetsFork2[];
-    extern const char kErrorAssetsDisabled[];
 
     // Laser
 #ifdef BEAM_LASER_SUPPORT

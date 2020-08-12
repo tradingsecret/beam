@@ -16,10 +16,13 @@
 #include "wallet/core/simple_transaction.h"
 #include "utility/log_rotation.h"
 #include "core/block_rw.h"
-//#include "keykeeper/trezor_key_keeper.h"
 #include "extensions/broadcast_gateway/broadcast_router.h"
 #include "extensions/news_channels/wallet_updates_provider.h"
 #include "extensions/news_channels/exchange_rate_provider.h"
+
+#ifdef BEAM_LELANTUS_SUPPORT
+#include "wallet/transactions/lelantus/push_transaction.h"
+#endif // BEAM_LELANTUS_SUPPORT
 
 using namespace std;
 
@@ -69,6 +72,11 @@ struct WalletModelBridge : public Bridge<IWalletModelAsync>
     void calcChange(Amount amount) override
     {
         call_async(&IWalletModelAsync::calcChange, amount);
+    }
+
+    void calcChangeConsideringShielded(Amount amount) override
+    {
+        call_async(&IWalletModelAsync::calcChangeConsideringShielded, amount);
     }
 
     void getWalletStatus() override
@@ -150,6 +158,11 @@ struct WalletModelBridge : public Bridge<IWalletModelAsync>
     void activateAddress(const wallet::WalletID& id) override
     {
         call_async(&IWalletModelAsync::activateAddress, id);
+    }
+
+    void getAddress(const WalletID& id) override
+    {
+        call_async(&IWalletModelAsync::getAddress, id);
     }
 
     void setNodeAddress(const std::string& addr) override
@@ -307,11 +320,10 @@ namespace beam::wallet
     }
 
     void WalletClient::start( std::map<Notification::Type,bool> activeNotifications,
-                              bool withAssets,
                               bool isSecondCurrencyEnabled,
                               std::shared_ptr<std::unordered_map<TxType, BaseTransaction::Creator::Ptr>> txCreators)
     {
-        m_thread = std::make_shared<std::thread>([this, isSecondCurrencyEnabled, withAssets, txCreators, activeNotifications]()
+        m_thread = std::make_shared<std::thread>([this, isSecondCurrencyEnabled, txCreators, activeNotifications]()
         {
             try
             {
@@ -322,7 +334,7 @@ namespace beam::wallet
                 static const unsigned LOG_CLEANUP_PERIOD_SEC = 120 * 3600; // 5 days
                 LogRotation logRotation(*m_reactor, LOG_ROTATION_PERIOD_SEC, LOG_CLEANUP_PERIOD_SEC);
 
-                auto wallet = make_shared<Wallet>(m_walletDB, withAssets);
+                auto wallet = make_shared<Wallet>(m_walletDB);
                 m_wallet = wallet;
 
                 if (txCreators)
@@ -498,14 +510,21 @@ namespace beam::wallet
 
     ByteBuffer WalletClient::generateVouchers(uint64_t ownID, size_t count) const
     {
-        // save master kdf is readonly 
-        auto kdf = m_walletDB->get_MasterKdf();
-        if (kdf)
-        {
-            auto vouchers = GenerateVoucherList(kdf, ownID, count);
-            return toByteBuffer(vouchers);
-        }
-        return {};
+        auto vouchers = GenerateVoucherList(m_walletDB->get_KeyKeeper(), ownID, count);
+        if (vouchers.empty())
+            return {};
+
+        return toByteBuffer(vouchers);
+    }
+
+    void WalletClient::setCoinConfirmationsOffset(uint32_t offset)
+    {
+        m_walletDB->setCoinConfirmationsOffset(offset);
+    }
+
+    uint32_t WalletClient::getCoinConfirmationsOffset() const
+    {
+        return m_walletDB->getCoinConfirmationsOffset();
     }
 
     void WalletClient::onCoinsChanged(ChangeAction action, const std::vector<Coin>& items)
@@ -526,16 +545,16 @@ namespace beam::wallet
         {
             for (const auto& tx : items)
             {
-                if (tx.m_txType == TxType::Simple)
+                if (!memis0(&tx.m_txId.front(), tx.m_txId.size())) // not special transaction
                 {
                     assert(!m_exchangeRateProvider.expired());
                     if (auto p = m_exchangeRateProvider.lock())
                     {
-                        m_walletDB->setTxParameter( tx.m_txId,
-                                                    kDefaultSubTxID,
-                                                    TxParameterID::ExchangeRates,
-                                                    toByteBuffer(p->getRates()),
-                                                    false);
+                        m_walletDB->setTxParameter(tx.m_txId,
+                            kDefaultSubTxID,
+                            TxParameterID::ExchangeRates,
+                            toByteBuffer(p->getRates()),
+                            false);
                     }
                 }
             }
@@ -554,6 +573,55 @@ namespace beam::wallet
     void WalletClient::onAddressChanged(ChangeAction action, const std::vector<WalletAddress>& items)
     {
         m_AddressChangesCollector.CollectItems(action, items);
+    }
+
+    void WalletClient::onShieldedCoinsChanged(ChangeAction action, const std::vector<ShieldedCoin>& coins)
+    {
+        // add virtual transaction for receiver
+#ifdef BEAM_LELANTUS_SUPPORT
+        if (action != ChangeAction::Added)
+        {
+            return;
+        }
+        auto s = m_wallet.lock();
+        if (!s)
+        {
+            return;
+        }
+        beam::Block::SystemState::Full tip;
+        m_walletDB->get_History().get_Tip(tip);
+        for (const auto& c : coins)
+        {
+            if (c.m_spentHeight != MaxHeight || c.m_confirmHeight == MaxHeight)
+            {
+                continue;
+            }
+            Timestamp ts = tip.m_TimeStamp;
+            if (tip.m_Height > c.m_confirmHeight)
+            {
+                auto delta = (tip.m_Height - c.m_confirmHeight);
+                ts -= delta * Rules::get().DA.Target_s;
+            }
+            else if (tip.m_Height < c.m_confirmHeight)
+            {
+                auto delta = c.m_confirmHeight - tip.m_Height;
+                ts += delta * Rules::get().DA.Target_s;
+            }
+            WalletAddress tempAddress;
+            m_walletDB->createAddress(tempAddress);
+            auto params = lelantus::CreatePushTransactionParameters(tempAddress.m_walletID)
+                .SetParameter(TxParameterID::Status, TxStatus::Completed)
+                .SetParameter(TxParameterID::Amount, c.m_CoinID.m_Value)
+                .SetParameter(TxParameterID::IsSender, false)
+                .SetParameter(TxParameterID::CreateTime, ts);
+            auto packed = params.Pack();
+            for (const auto& p : packed)
+            {
+                storage::setTxParameter(*m_walletDB, *params.GetTxID(), p.first, p.second, true);
+            }
+        }
+        
+#endif // BEAM_LELANTUS_SUPPORT
     }
 
     void WalletClient::onSyncProgress(int done, int total)
@@ -718,6 +786,34 @@ namespace beam::wallet
         {
             onChangeCalculated(sum - amount);
         }
+    }
+
+    void WalletClient::calcChangeConsideringShielded(Amount amount)
+    {
+        std::vector<Coin> vSelStd;
+        std::vector<ShieldedCoin> vSelShielded;
+        m_walletDB->selectCoins2(amount, Zero, vSelStd, vSelShielded, Rules::get().Shielded.MaxIns, false);
+
+        Amount sum = 0;
+        for (auto& c : vSelStd)
+        {
+            sum += c.m_ID.m_Value;
+        }
+        for (auto& c : vSelShielded)
+        {
+            sum += c.m_CoinID.m_Value;
+        }
+
+        if (sum <= amount)
+        {
+            onChangeCalculated(0);
+        }
+        else
+        {
+            onChangeCalculated(sum - amount);
+        }
+
+        onNeedExtractShieldedCoins(!vSelShielded.empty());
     }
 
     void WalletClient::getWalletStatus()
@@ -911,6 +1007,21 @@ namespace beam::wallet
         }
     }
 
+    void WalletClient::getAddress(const WalletID& id) 
+    {
+        try
+        {
+            onGetAddress(id, m_walletDB->getAddress(id));
+        }
+        catch (const std::exception& e)
+        {
+            LOG_UNHANDLED_EXCEPTION() << "what = " << e.what();
+        }
+        catch (...) {
+            LOG_UNHANDLED_EXCEPTION();
+        }
+    }
+
     void WalletClient::setNodeAddress(const std::string& addr)
     {
         if (auto s = m_nodeNetwork.lock())
@@ -1084,8 +1195,6 @@ namespace beam::wallet
         status.receiving         = AmountBig::get_Lo(totals.Incoming);
         status.sending           = AmountBig::get_Lo(totals.Outgoing);
         status.maturing          = AmountBig::get_Lo(totals.Maturing);
-        status.linked            = AmountBig::get_Lo(totals.Linked);
-        status.unlinked          = AmountBig::get_Lo(totals.Unlinked);
         status.shielded          = AmountBig::get_Lo(totals.Shielded);
         status.update.lastTime   = m_walletDB->getLastUpdateTime();
 

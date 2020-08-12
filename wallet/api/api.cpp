@@ -842,9 +842,8 @@ OfferInput collectOfferInput(const JsonRpcId& id, const json& params)
         return "unknown error.";
     }
 
-    WalletApi::WalletApi(IWalletApiHandler& handler, bool withAssets, ACL acl)
+    WalletApi::WalletApi(IWalletApiHandler& handler, ACL acl)
         : Api(handler, acl)
-        , m_withAssets(withAssets)
     {
         #define REG_FUNC(api, name, writeAccess) \
         _methods[name] = {BIND_THIS_MEMFN(on##api##Message), writeAccess};
@@ -1084,15 +1083,9 @@ OfferInput collectOfferInput(const JsonRpcId& id, const json& params)
 
     void WalletApi::checkCAEnabled(const JsonRpcId& id)
     {
-        if (!Rules::get().CA.Enabled)
-        {
-            throw WalletApi::jsonrpc_exception{ApiError::NotSupported, "Confidential assets are not supported until fork2.", id};
-        }
-
-        if (!m_withAssets)
-        {
-            throw WalletApi::jsonrpc_exception{ApiError::NotSupported, "Confidential assets are disabled. Add --enable_assets to command line.", id};
-        }
+        TxFailureReason res = wallet::CheckAssetsEnabled(MaxHeight);
+        if (TxFailureReason::Count != res)
+            throw WalletApi::jsonrpc_exception{ApiError::NotSupported, GetFailureMessage(res), id};
     }
 
     template<typename T>
@@ -1137,6 +1130,29 @@ OfferInput collectOfferInput(const JsonRpcId& id, const json& params)
         GetAssetInfo data;
         ReadAssetParams(id, params, data);
 
+        getHandler().onMessage(id, data);
+    }
+
+    void WalletApi::onSetConfirmationsCountMessage(const JsonRpcId& id, const json& params)
+    {
+        SetConfirmationsCount data;
+        checkJsonParam(params, "count", id);
+
+        if (params["count"] >= 0)
+        {
+            data.count = params["count"];
+        }
+        else
+        {
+            throw jsonrpc_exception{ ApiError::InvalidJsonRpc, "Invalid 'count' parameter.", id};
+        }
+
+        getHandler().onMessage(id, data);
+    }
+
+    void WalletApi::onGetConfirmationsCountMessage(const JsonRpcId& id, const json& params)
+    {
+        GetConfirmationsCount data;
         getHandler().onMessage(id, data);
     }
 
@@ -1535,7 +1551,7 @@ OfferInput collectOfferInput(const JsonRpcId& id, const json& params)
                 {"asset_id", utxo.m_ID.m_AssetID},
                 {"amount", utxo.m_ID.m_Value},
                 {"type", (const char*)FourCC::Text(utxo.m_ID.m_Type)},
-                {"maturity", utxo.get_Maturity()},
+                {"maturity", utxo.get_Maturity(res.confirmations_count)},
                 {"createTxId", createTxId},
                 {"spentTxId", spentTxId},
                 {"status", utxo.m_status},
@@ -1613,6 +1629,34 @@ OfferInput collectOfferInput(const JsonRpcId& id, const json& params)
             jsres["emission"] = AmountBig::get_Lo(res.AssetInfo.m_Value);
         }
         jsres["emission_str"] = std::to_string(res.AssetInfo.m_Value);
+    }
+
+    void WalletApi::getResponse(const JsonRpcId &id, const SetConfirmationsCount::Response &res, json &msg)
+    {
+        msg = json
+        {
+            {JsonRpcHrd, JsonRpcVerHrd},
+            {"id", id},
+            {"result",
+                {
+                    {"count", res.count}
+                }
+            }
+        };
+    }
+
+    void WalletApi::getResponse(const JsonRpcId &id, const GetConfirmationsCount::Response &res, json &msg)
+    {
+        msg = json
+        {
+            {JsonRpcHrd, JsonRpcVerHrd},
+            {"id", id},
+            {"result",
+                {
+                    {"count", res.count}
+                }
+            }
+        };
     }
 
     void WalletApi::getResponse(const JsonRpcId& id, const Consume::Response& res, json& msg)

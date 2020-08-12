@@ -95,6 +95,8 @@ namespace beam::wallet
     macro(ExportPaymentProof, "export_payment_proof", API_READ_ACCESS)    \
     macro(VerifyPaymentProof, "verify_payment_proof", API_READ_ACCESS)    \
     macro(GetAssetInfo,       "get_asset_info",       API_READ_ACCESS)    \
+    macro(SetConfirmationsCount, "set_confirmations_count", API_WRITE_ACCESS)    \
+    macro(GetConfirmationsCount, "get_confirmations_count", API_READ_ACCESS)    \
     SWAP_OFFER_API_METHODS(macro)
 
 #if defined(BEAM_ATOMIC_SWAP_SUPPORT)
@@ -415,6 +417,7 @@ namespace beam::wallet
         struct Response
         {
             std::vector<Coin> utxos;
+            uint32_t confirmations_count = 0;
         };
     };
 
@@ -513,6 +516,22 @@ namespace beam::wallet
         };
     };
 
+    struct SetConfirmationsCount
+    {
+        uint32_t count = 0;
+        struct Response {
+            uint32_t count;
+        };
+    };
+
+    struct GetConfirmationsCount
+    {
+        struct Response
+        {
+            uint32_t count;
+        };
+    };
+
     class IApiHandler
     {
     public:
@@ -585,7 +604,7 @@ namespace beam::wallet
     class WalletApi : public Api
     {
     public:
-        WalletApi(IWalletApiHandler& handler, bool withAssets, ACL acl = boost::none);
+        WalletApi(IWalletApiHandler& handler, ACL acl = boost::none);
 
 #define RESPONSE_FUNC(api, name, _) \
         void getResponse(const JsonRpcId& id, const api::Response& data, json& msg);
@@ -607,8 +626,5 @@ namespace beam::wallet
         template<typename T>
         void onIssueConsumeMessage(bool issue, const JsonRpcId& id, const json& params);
         void checkCAEnabled(const JsonRpcId& id);
-
-    private:
-        bool m_withAssets = false;
     };
 }  // namespace beam::wallet

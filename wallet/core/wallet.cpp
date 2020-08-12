@@ -124,7 +124,7 @@ namespace beam::wallet
                     walletDB->saveAddress(*receiverAddr);
                 }
             }
-
+            
             TxParameters temp{ parameters };
             temp.SetParameter(TxParameterID::IsSelfTx, receiverAddr->isOwn());
             return temp;
@@ -142,7 +142,7 @@ namespace beam::wallet
             {
                 address.m_Identity = *identity;
             }
-
+            
             walletDB->saveAddress(address);
         }
         return parameters;
@@ -150,7 +150,7 @@ namespace beam::wallet
 
     const char Wallet::s_szNextEvt[] = "NextUtxoEvent"; // any event, not just UTXO. The name is for historical reasons
 
-    Wallet::Wallet(IWalletDB::Ptr walletDB,  bool withAssets, TxCompletedAction&& action, UpdateCompletedAction&& updateCompleted)
+    Wallet::Wallet(IWalletDB::Ptr walletDB, TxCompletedAction&& action, UpdateCompletedAction&& updateCompleted)
         : m_WalletDB{ walletDB }
         , m_TxCompletedAction{ move(action) }
         , m_UpdateCompleted{ move(updateCompleted) }
@@ -159,7 +159,7 @@ namespace beam::wallet
     {
         assert(walletDB);
         // the only default type of transaction
-        RegisterTransactionType(TxType::Simple, make_unique<SimpleTransaction::Creator>(m_WalletDB, withAssets));
+        RegisterTransactionType(TxType::Simple, make_unique<SimpleTransaction::Creator>(m_WalletDB));
     }
 
     Wallet::~Wallet()
@@ -670,9 +670,9 @@ namespace beam::wallet
         {
         case TxType::VoucherRequest:
             {
-                Key::IKdf::Ptr pKdf = m_WalletDB->get_MasterKdf();
-                if (!pKdf)
-                    return; // without master Kdf we can create the ticket, but can't sign it.
+                auto pKeyKeeper = m_WalletDB->get_KeyKeeper();
+                if (!pKeyKeeper)
+                    return; // We can generate the ticket with OwnerKey, but can't sign it.
 
                 uint32_t nCount = 0;
                 msg.GetParameter((TxParameterID) 0, nCount);
@@ -684,7 +684,7 @@ namespace beam::wallet
                 if (!address.is_initialized() || !address->m_OwnID)
                     return;
 
-                auto res = GenerateVoucherList(pKdf, address->m_OwnID, nCount);
+                auto res = GenerateVoucherList(pKeyKeeper, address->m_OwnID, nCount);
 
                 SetTxParameter msgOut;
                 msgOut.m_Type = TxType::VoucherResponse;
@@ -701,14 +701,23 @@ namespace beam::wallet
                 std::vector<ShieldedTxo::Voucher> res;
                 msg.GetParameter(TxParameterID::ShieldedVoucherList, res);
                 if (res.empty())
+                {
+                    LOG_WARNING() << "Received an empty voucher list";
                     return;
+                }
 
                 auto address = m_WalletDB->getAddress(msg.m_From);
                 if (!address.is_initialized())
+                {
+                    LOG_WARNING() << "Received vouchers for unknown address";
                     return;
+                }
 
                 if (!IsValidVoucherList(res, address->m_Identity))
+                {
+                    LOG_WARNING() << "Invalid voucher list received";
                     return;
+                }
 
                 OnVouchersFrom(*address, myID, std::move(res));
 
@@ -740,11 +749,11 @@ namespace beam::wallet
 
         for (auto p : m_ActiveTransactions)
         {
-            ShieldedVoucherList vouchers;
+            ShieldedTxo::Voucher voucher;
             const auto& tx = p.second;
             if (tx->GetType() == TxType::PushTransaction
                 && tx->GetMandatoryParameter<WalletID>(TxParameterID::PeerID) == addr.m_walletID
-                && !tx->GetParameter<ShieldedVoucherList>(TxParameterID::ShieldedVoucherList, vouchers))
+                && !tx->GetParameter<ShieldedTxo::Voucher>(TxParameterID::Voucher, voucher))
             {
                 UpdateTransaction(tx);
             }
@@ -999,10 +1008,7 @@ namespace beam::wallet
 
     void Wallet::OnRequestComplete(MyRequestProofShieldedOutp& r)
     {
-        if (!r.m_Res.m_Proof.empty())
-        {
-            r.m_callback(r.m_Res);
-        }
+        r.m_callback(r.m_Res); // either successful or not
     }
 
     void Wallet::OnRequestComplete(MyRequestBbsMsg& r)
@@ -1013,7 +1019,7 @@ namespace beam::wallet
     void Wallet::OnRequestComplete(MyRequestStateSummary& r)
     {
         // TODO: save full response?
-        storage::setVar(*m_WalletDB, kStateSummaryShieldedOutsDBPath, r.m_Res.m_ShieldedOuts);
+        m_WalletDB->set_ShieldedOuts(r.m_Res.m_ShieldedOuts);
     }
 
     void Wallet::RequestEvents()
@@ -1170,17 +1176,14 @@ namespace beam::wallet
 
     void Wallet::ProcessEventShieldedUtxo(const proto::Event::Shielded& shieldedEvt, Height h)
     {
-        auto shieldedCoin = m_WalletDB->getShieldedCoin(shieldedEvt.m_Key);
+        auto shieldedCoin = m_WalletDB->getShieldedCoin(shieldedEvt.m_CoinID.m_Key);
         if (!shieldedCoin)
         {
             shieldedCoin = ShieldedCoin{};
-            shieldedCoin->m_Key = shieldedEvt.m_Key;
         }
 
-        shieldedCoin->m_User = shieldedEvt.m_User;
-        shieldedCoin->m_ID = shieldedEvt.m_ID;
-        shieldedCoin->m_assetID = shieldedEvt.m_AssetID;
-        shieldedCoin->m_value = shieldedEvt.m_Value;
+        shieldedCoin->m_CoinID = shieldedEvt.m_CoinID;
+        shieldedCoin->m_TxoID = shieldedEvt.m_TxoID;
 
         bool isAdd = 0 != (proto::Event::Flags::Add & shieldedEvt.m_Flags);
         if (isAdd)
@@ -1194,7 +1197,7 @@ namespace beam::wallet
 
         m_WalletDB->saveShieldedCoin(*shieldedCoin);
 
-        LOG_INFO() << "Shielded output, ID: " << shieldedEvt.m_ID << (isAdd ? " Confirmed" : " Spent") << ", Height=" << h;
+        LOG_INFO() << "Shielded output, ID: " << shieldedEvt.m_TxoID << (isAdd ? " Confirmed" : " Spent") << ", Height=" << h;
     }
 
     void Wallet::OnRolledBack()

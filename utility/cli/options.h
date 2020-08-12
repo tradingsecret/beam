@@ -135,6 +135,8 @@ namespace beam
         extern const char* SWAP_TOKEN;
         extern const char* SWAP_AMOUNT;
         extern const char* SWAP_FEERATE;
+        extern const char* ESTIMATE_SWAP_FEERATE;
+        extern const char* GET_BALANCE;
         extern const char* SWAP_COIN;
         extern const char* SWAP_BEAM_SIDE;
         extern const char* SWAP_TX_HISTORY;
@@ -215,7 +217,6 @@ namespace beam
         extern const char* EXTRACT_FROM_POOL;
         extern const char* SHIELDED_UTXOS;
         extern const char* SHIELDED_ID;
-        extern const char* WINDOW_BEGIN;
         extern const char* SHIELDED_TX_HISTORY;
         extern const char* VOUCHER_COUNT;
 

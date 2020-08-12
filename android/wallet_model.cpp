@@ -42,6 +42,7 @@ namespace
         jobject addr = env->AllocObject(WalletAddressClass);
 
         setStringField(env, WalletAddressClass, addr, "walletID", to_string(address.m_walletID));
+        setStringField(env, WalletAddressClass, addr, "identity", to_string(address.m_Identity));
         setStringField(env, WalletAddressClass, addr, "label", address.m_label);
         setStringField(env, WalletAddressClass, addr, "category", address.m_category);
         setLongField(env, WalletAddressClass, addr, "createTime", address.m_createTime);
@@ -58,7 +59,6 @@ namespace
         setStringField(env, TxDescriptionClass, tx, "id", to_hex(txDescription.m_txId.data(), txDescription.m_txId.size()));
         setLongField(env, TxDescriptionClass, tx, "amount", txDescription.m_amount);
         setLongField(env, TxDescriptionClass, tx, "fee", txDescription.m_fee);
-        setLongField(env, TxDescriptionClass, tx, "change", txDescription.m_changeBeam);
         setLongField(env, TxDescriptionClass, tx, "minHeight", txDescription.m_minHeight);
 
         setStringField(env, TxDescriptionClass, tx, "peerId", to_string(txDescription.m_peerId));
@@ -274,13 +274,6 @@ WalletModel::~WalletModel()
     stopReactor();
 }
 
-beam::wallet::WalletAddress WalletModel::generateToken(beam::wallet::IWalletDB::Ptr walletDB) 
-{
-    auto address = GenerateNewAddress(walletDB, "", WalletAddress::ExpirationStatus::Never);
-    return address;
-}
-
-
 void WalletModel::onStatus(const WalletStatus& status)
 {
     JNIEnv* env = Android_JNI_getEnv();
@@ -363,6 +356,17 @@ void WalletModel::onChangeCalculated(Amount change)
     jmethodID callback = env->GetStaticMethodID(WalletListenerClass, "onChangeCalculated", "(J)V");
 
     env->CallStaticVoidMethod(WalletListenerClass, callback, change);
+}
+
+void WalletModel::onNeedExtractShieldedCoins(bool val)
+{
+    LOG_DEBUG() << "onNeedExtractShieldedCoins()";
+
+    JNIEnv* env = Android_JNI_getEnv();
+
+    jmethodID callback = env->GetStaticMethodID(WalletListenerClass, "onNeedExtractShieldedCoins", "(J)V");
+
+    env->CallStaticVoidMethod(WalletListenerClass, callback, val);
 }
 
 void WalletModel::onAllUtxoChanged(ChangeAction action, const std::vector<Coin>& utxosVec)
@@ -605,7 +609,7 @@ void WalletModel::onNotificationsChanged(ChangeAction action, const std::vector<
 
 void WalletModel::onExchangeRates(const std::vector<ExchangeRate>& rates)
 {
-    LOG_DEBUG() << "onExchangeRates";
+    LOG_DEBUG() << "onExchangeRates(" << rates.size() << ")";
 
     JNIEnv* env = Android_JNI_getEnv();
 

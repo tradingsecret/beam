@@ -869,7 +869,6 @@ struct NodeProcessor::MultiSigmaContext::MyTask
 {
 	MultiSigmaContext* m_pThis;
 	const Node* m_pNode;
-	//const ECC::Scalar::Native* m_pS;
 
 	virtual void Exec(Executor::Context& ctx) override
 	{
@@ -914,7 +913,15 @@ void NodeProcessor::MultiSigmaContext::Calculate(ECC::Point::Native& res, NodePr
 struct NodeProcessor::MultiShieldedContext
 	:public NodeProcessor::MultiSigmaContext
 {
-	bool IsValid(const TxVectors::Eternal&, ECC::InnerProduct::BatchContext&, uint32_t iVerifier, uint32_t nTotal);
+	ValidatedCache m_Vc;
+
+	void MoveToGlobalCache(ValidatedCache& vc)
+	{
+		m_Vc.MoveInto(vc);
+		vc.ShrinkTo(10 * 1024);
+	}
+
+	bool IsValid(const TxVectors::Eternal&, ECC::InnerProduct::BatchContext&, uint32_t iVerifier, uint32_t nTotal, ValidatedCache&);
 private:
 
 	Sigma::CmListVec m_Lst;
@@ -961,13 +968,14 @@ bool NodeProcessor::MultiShieldedContext::IsValid(const TxKernelShieldedInput& k
 	return true;
 }
 
-bool NodeProcessor::MultiShieldedContext::IsValid(const TxVectors::Eternal& txve, ECC::InnerProduct::BatchContext& bc, uint32_t iVerifier, uint32_t nTotal)
+bool NodeProcessor::MultiShieldedContext::IsValid(const TxVectors::Eternal& txve, ECC::InnerProduct::BatchContext& bc, uint32_t iVerifier, uint32_t nTotal, ValidatedCache& vc)
 {
 	struct Walker
 		:public TxKernel::IWalker
 	{
 		std::vector<ECC::Scalar::Native> m_vKs;
 		MultiShieldedContext* m_pThis;
+		ValidatedCache* m_pVc;
 		ECC::InnerProduct::BatchContext* m_pBc;
 		uint32_t m_iVerifier;
 		uint32_t m_Total;
@@ -979,8 +987,28 @@ bool NodeProcessor::MultiShieldedContext::IsValid(const TxVectors::Eternal& txve
 
 			const TxKernelShieldedInput& v = Cast::Up<TxKernelShieldedInput>(krn);
 
-			if (!m_iVerifier && !m_pThis->IsValid(v, m_vKs, *m_pBc))
-				return false;
+			if (!m_iVerifier)
+			{
+				ECC::Hash::Value hv;
+				ECC::Hash::Processor()
+					.Serialize(v)
+					>> hv;
+
+				bool bFound;
+				{
+					std::unique_lock<std::mutex> scope(m_pThis->m_Mutex);
+
+					bFound =
+						m_pThis->m_Vc.Find(hv) ||
+						m_pVc->Find(hv);
+
+					if (!bFound)
+						m_pThis->m_Vc.Insert(hv, v.m_WindowEnd);
+				}
+
+				if (!bFound && !m_pThis->IsValid(v, m_vKs, *m_pBc))
+					return false;
+			}
 
 			if (++m_iVerifier == m_Total)
 				m_iVerifier = 0;
@@ -990,6 +1018,7 @@ bool NodeProcessor::MultiShieldedContext::IsValid(const TxVectors::Eternal& txve
 
 	} wlk;
 	wlk.m_pThis = this;
+	wlk.m_pVc = &vc;
 	wlk.m_pBc = &bc;
 	wlk.m_iVerifier = iVerifier;
 	wlk.m_Total = nTotal;
@@ -1251,6 +1280,8 @@ struct NodeProcessor::MultiblockContext
 		}
 
 		m_InProgress.m_Min = m_InProgress.m_Max + 1;
+
+		m_Msc.MoveToGlobalCache(m_This.m_ValCache);
 	}
 
 	void OnBlock(const PeerID& pid, const MyTask::SharedBlock::Ptr& pShared)
@@ -1380,7 +1411,7 @@ void NodeProcessor::MultiblockContext::MyTask::SharedBlock::Exec(uint32_t iVerif
 	bool bValid = ctx.ValidateAndSummarize(bSparse ? txbDummy : m_Body, m_Body.get_Reader());
 
 	if (bValid)
-		bValid = m_Mbc.m_Msc.IsValid(m_Body, *ECC::InnerProduct::BatchContext::s_pInstance, iVerifier, m_Ctx.m_Params.m_nVerifiers);
+		bValid = m_Mbc.m_Msc.IsValid(m_Body, *ECC::InnerProduct::BatchContext::s_pInstance, iVerifier, m_Ctx.m_Params.m_nVerifiers, m_Mbc.m_This.m_ValCache);
 
 	std::unique_lock<std::mutex> scope(m_Mbc.m_Mutex);
 
@@ -2528,28 +2559,23 @@ void NodeProcessor::Recognize(const TxKernelShieldedOutput& v, Height h, uint32_
 	{
 		const ShieldedTxo& txo = v.m_Txo;
 
-		ShieldedTxo::Data::TicketParams sp;
-		if (!sp.Recover(txo.m_Ticket, vk.m_pSh[nIdx]))
+		ShieldedTxo::Data::Params pars;
+		if (!pars.m_Ticket.Recover(txo.m_Ticket, vk.m_pSh[nIdx]))
 			continue;
 
 		ECC::Oracle oracle;
 		oracle << v.m_Msg;
 
-		ShieldedTxo::Data::OutputParams op;
-		if (!op.Recover(txo, sp.m_SharedSecret, oracle))
+		if (!pars.m_Output.Recover(txo, pars.m_Ticket.m_SharedSecret, oracle))
 			continue;
 
 		proto::Event::Shielded evt;
-		evt.m_ID = nID;
-		evt.m_Value = op.m_Value;
-		evt.m_AssetID = op.m_AssetID;
-		evt.m_User = op.m_User;
-		evt.m_Key.m_nIdx = nIdx;
-		evt.m_Key.m_IsCreatedByViewer = sp.m_IsCreatedByViewer;
-		evt.m_Key.m_kSerG = sp.m_pK[0];
+		evt.m_TxoID = nID;
+		pars.ToID(evt.m_CoinID);
+		evt.m_CoinID.m_Key.m_nIdx = nIdx;
 		evt.m_Flags = proto::Event::Flags::Add;
 
-		EventKey::Shielded key = sp.m_SpendPk;
+		EventKey::Shielded key = pars.m_Ticket.m_SpendPk;
 		key.m_Y |= EventKey::s_FlagShielded;
 
 		AddEvent(h, EventKey::s_IdxKernel + nKrnIdx, evt, key);
@@ -3808,8 +3834,8 @@ void NodeProcessor::RollbackTo(Height h)
 		assert(bbR.empty());
 	}
 
-
 	m_RecentStates.RollbackTo(h);
+	m_ValCache.OnShLo(m_Extra.m_ShieldedOutputs);
 
 	m_Mmr.m_States.ShrinkTo(m_Mmr.m_States.H2I(m_Cursor.m_Sid.m_Height));
 
@@ -4225,13 +4251,15 @@ uint8_t NodeProcessor::ValidateTxContextEx(const Transaction& tx, const HeightRa
 			ECC::InnerProduct::BatchContextEx<4> bc;
 			MultiShieldedContext msc;
 
-			if (!msc.IsValid(tx, bc, 0, 1))
+			if (!msc.IsValid(tx, bc, 0, 1, m_ValCache))
 				return proto::TxStatus::InvalidInput;
 
 			msc.Calculate(bc.m_Sum, *this);
 
 			if (!bc.Flush())
 				return proto::TxStatus::InvalidInput;
+
+			msc.MoveToGlobalCache(m_ValCache);
 		}
 
 		assert(bic.m_ShieldedOuts <= Rules::get().Shielded.MaxOuts);
@@ -5193,6 +5221,86 @@ int NodeProcessor::get_AssetAt(Asset::Full& ai, Height h)
 	}
 
 	return 1;
+}
+
+void NodeProcessor::ValidatedCache::ShrinkTo(uint32_t n)
+{
+	while (m_Mru.size() > n)
+		Delete(m_Mru.back().get_ParentObj());
+}
+
+void NodeProcessor::ValidatedCache::OnShLo(const Entry::ShLo::Type& nShLo)
+{
+	while (true)
+	{
+		ShLoSet::reverse_iterator it = m_ShLo.rbegin();
+		if (m_ShLo.rend() == it)
+			break;
+		Entry::ShLo& x = *it;
+
+		if (x.m_End <= nShLo)
+			break;
+
+		Delete(x.get_ParentObj());
+	}
+}
+
+void NodeProcessor::ValidatedCache::RemoveRaw(Entry& x)
+{
+	m_Keys.erase(KeySet::s_iterator_to(x.m_Key));
+	m_ShLo.erase(ShLoSet::s_iterator_to(x.m_ShLo));
+	m_Mru.erase(MruList::s_iterator_to(x.m_Mru));
+}
+
+void NodeProcessor::ValidatedCache::Delete(Entry& x)
+{
+	RemoveRaw(x);
+	delete &x;
+}
+
+void NodeProcessor::ValidatedCache::MoveToFront(Entry& x)
+{
+	m_Mru.erase(MruList::s_iterator_to(x.m_Mru));
+	m_Mru.push_front(x.m_Mru);
+}
+
+bool NodeProcessor::ValidatedCache::Find(const Entry::Key::Type& val)
+{
+	Entry::Key key;
+	key.m_Value = val;
+
+	KeySet::iterator it = m_Keys.find(key);
+	if (m_Keys.end() == it)
+		return false;
+
+	MoveToFront(it->get_ParentObj());
+	return true;
+}
+
+void NodeProcessor::ValidatedCache::Insert(const Entry::Key::Type& val, const Entry::ShLo::Type& nShLo)
+{
+	Entry* pEntry(new Entry);
+	pEntry->m_Key.m_Value = val;
+	pEntry->m_ShLo.m_End = nShLo;
+
+	InsertRaw(*pEntry);
+}
+
+void NodeProcessor::ValidatedCache::InsertRaw(Entry& x)
+{
+	m_Keys.insert(x.m_Key);
+	m_ShLo.insert(x.m_ShLo);
+	m_Mru.push_front(x.m_Mru);
+}
+
+void NodeProcessor::ValidatedCache::MoveInto(ValidatedCache& dst)
+{
+	while (!m_Mru.empty())
+	{
+		Entry& x = m_Mru.back().get_ParentObj();
+		RemoveRaw(x);
+		dst.InsertRaw(x);
+	}
 }
 
 } // namespace beam
