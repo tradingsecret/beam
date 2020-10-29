@@ -58,9 +58,20 @@ namespace
     {
         jobject tx = env->AllocObject(TxDescriptionClass);
 
+        Amount fee = txDescription.m_fee;
+        
+        std::vector<TxKernel::Ptr> shieldedInputs;
+        txDescription.GetParameter(TxParameterID::InputsShielded, shieldedInputs);
+        if (shieldedInputs.size())
+        {
+            Transaction::FeeSettings fs;
+            Amount shieldedFee = shieldedInputs.size() * (fs.m_Kernel + fs.m_ShieldedInput);
+            fee = shieldedFee + txDescription.m_fee;
+        }
+
         setStringField(env, TxDescriptionClass, tx, "id", to_hex(txDescription.m_txId.data(), txDescription.m_txId.size()));
         setLongField(env, TxDescriptionClass, tx, "amount", txDescription.m_amount);
-        setLongField(env, TxDescriptionClass, tx, "fee", txDescription.m_fee);
+        setLongField(env, TxDescriptionClass, tx, "fee", fee);
         setLongField(env, TxDescriptionClass, tx, "minHeight", txDescription.m_minHeight);
 
         setStringField(env, TxDescriptionClass, tx, "peerId", to_string(txDescription.m_peerId));
