@@ -777,6 +777,11 @@ namespace beam::wallet
             return false;
         }
 
+        void OnTxSummaryParam(const TxID& txID, SubTxID subTxID, TxParameterID, const ByteBuffer*);
+        void OnTxSummaryParam(const TxID& txID, const char* szName, const ByteBuffer*);
+        void FillTxSummaryTable();
+        void FillTxSummaryTableParam(const char* szField, TxParameterID paramID);
+
     private:
         friend struct sqlite::Statement;
         bool m_Initialized = false;
