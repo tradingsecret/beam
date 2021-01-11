@@ -64,22 +64,6 @@ namespace beam::wallet
             }
             return txChanged;
         }
-
-        Timestamp RestoreCreationTime(const Block::SystemState::Full& tip, Height confirmHeight)
-        {
-            Timestamp ts = tip.m_TimeStamp;
-            if (tip.m_Height > confirmHeight)
-            {
-                auto delta = (tip.m_Height - confirmHeight);
-                ts -= delta * Rules::get().DA.Target_s;
-            }
-            else if (tip.m_Height < confirmHeight)
-            {
-                auto delta = confirmHeight - tip.m_Height;
-                ts += delta * Rules::get().DA.Target_s;
-            }
-            return ts;
-        }
     }
 
     // @param SBBS address as string
@@ -169,7 +153,6 @@ namespace beam::wallet
     namespace
     {
         constexpr char s_szNextEvt[] = "NextUtxoEvent"; // any event, not just UTXO. The name is for historical reasons
-        constexpr char s_szIsTreasuryHandled[] = "IsTreasuryHandled";
     }
     
     Wallet::Wallet(IWalletDB::Ptr walletDB, TxCompletedAction&& action, UpdateCompletedAction&& updateCompleted)
@@ -182,8 +165,7 @@ namespace beam::wallet
         assert(walletDB);
         // the only default type of transaction
         RegisterTransactionType(TxType::Simple, make_unique<SimpleTransaction::Creator>(m_WalletDB));
-        m_Extra.m_ShieldedOutputs = m_WalletDB->get_ShieldedOuts();
-        storage::getVar(*m_WalletDB, s_szIsTreasuryHandled, m_IsTreasuryHandled);
+        m_IsTreasuryHandled = storage::isTreasuryHandled(*m_WalletDB);
     }
 
     Wallet::~Wallet()
@@ -226,6 +208,7 @@ namespace beam::wallet
             if (!m_OwnedNodesOnline++) // on first connection to the node
             {
                 AbortBodiesRequests();
+                ResetCommitmentsCache();
                 RequestEvents(); // maybe time to refresh UTXOs
             }
         }
@@ -296,6 +279,7 @@ namespace beam::wallet
 
         storage::setVar(*m_WalletDB, s_szNextEvt, 0);
         m_WalletDB->deleteEventsFrom(Rules::HeightGenesis - 1);
+        ResetCommitmentsCache();
         SetTreasuryHandled(false);
         RequestTreasury();
         RequestEvents();
@@ -392,12 +376,12 @@ namespace beam::wallet
         }
     }
 
-    void Wallet::on_tx_completed(const TxID& txID)
+    void Wallet::on_tx_completed(const TxID& id)
     {
         // Note: the passed TxID is (most probably) the member of the transaction, 
         // which we, most probably, are going to erase from the map, which can potentially delete it.
         // Make sure we either copy the txID, or prolong the lifetime of the tx.
-
+        TxID txID = id; // copy
         BaseTransaction::Ptr pGuard;
 
         auto it = m_ActiveTransactions.find(txID);
@@ -488,13 +472,13 @@ namespace beam::wallet
         switch (r.get_Type())
         {
 #define THE_MACRO(type, msgOut, msgIn) \
-        case Request::Type::type: \
-            { \
-                MyRequest##type& x = static_cast<MyRequest##type&>(r); \
-                get_ParentObj().DeleteReq(x); \
-                get_ParentObj().OnRequestComplete(x); \
-            } \
-            break;
+    case Request::Type::type: \
+        { \
+            MyRequest##type& x = static_cast<MyRequest##type&>(r); \
+            get_ParentObj().DeleteReq(x); \
+            get_ParentObj().OnRequestComplete(x); \
+        } \
+        break;
 
             REQUEST_TYPES_All(THE_MACRO)
 #undef THE_MACRO
@@ -963,6 +947,7 @@ namespace beam::wallet
             return; // Right now nothing is concluded from empty proofs
 
         const auto& proof = r.m_Res.m_Proofs.front(); // Currently - no handling for multiple coins for the same commitment.
+        CacheCommitment(r.m_Msg.m_Utxo, proof.m_State.m_Maturity, true);
         // we don't know the real height, but it'll be used for logging only. For standard outputs maturity and height are the same
         ProcessEventUtxo(r.m_CoinID, proof.m_State.m_Maturity, proof.m_State.m_Maturity, true, {});
     }
@@ -1101,6 +1086,10 @@ namespace beam::wallet
     {
         // TODO: save full response?
         m_WalletDB->set_ShieldedOuts(r.m_Res.m_ShieldedOuts);
+        if (m_OwnedNodesOnline)
+        {
+            m_Extra.m_ShieldedOutputs = r.m_Res.m_ShieldedOuts;
+        }
     }
 
     void Wallet::OnRequestComplete(MyRequestShieldedOutputsAt& r)
@@ -1218,16 +1207,15 @@ namespace beam::wallet
         try 
         {
             Height startHeight = r.m_StartHeight;
+            if (!r.m_Res.m_Bodies.empty())
+            {
+                RequestBodies(r.m_Msg.m_Height0, startHeight + r.m_Res.m_Bodies.size());
+            }
             for (const auto& b : r.m_Res.m_Bodies)
             {
                 ProcessBody(b, startHeight, recognizer);
 
                 ++startHeight;
-            }
-            
-            if (!r.m_Res.m_Bodies.empty())
-            {
-                RequestBodies(r.m_Msg.m_Height0, startHeight);
             }
         }
         catch (const std::exception&)
@@ -1294,37 +1282,14 @@ namespace beam::wallet
     void Wallet::PreprocessBlock(TxVectors::Full& block)
     {
         // In this method we emulate work performed by NodeProcessor::HandleValidatedBlock
-        // TODO: improve this
-        std::map<ECC::Point, Coin> coins;
-
-        m_WalletDB->visitCoins([&](const Coin& c)
-        {
-            if (c.m_status != Coin::Status::Available && c.m_status != Coin::Status::Outgoing)
-                return true;
-            
-            ECC::Point comm;
-            if (m_WalletDB->get_CommitmentSafe(comm, c.m_ID))
-            {
-                coins.emplace(comm, c);
-            }
-            if (c.m_ID.IsBb21Possible())
-            {
-                CoinID cid = c.m_ID;
-                cid.set_WorkaroundBb21();
-                if (m_WalletDB->get_CommitmentSafe(comm, cid))
-                {
-                    coins.emplace(comm, c);
-                }
-            }
-            return true;
-        });
+        CacheCommitments();
 
         for (auto& input : block.m_vInputs)
         {
-            auto cit = coins.find(input->m_Commitment);
-            if (cit != coins.end())
+            auto cit = m_Commitments.find(input->m_Commitment);
+            if (cit != m_Commitments.end())
             {
-                input->m_Internal.m_Maturity = cit->second.m_maturity;
+                input->m_Internal.m_Maturity = cit->second;
             }
         }
 
@@ -1349,7 +1314,7 @@ namespace beam::wallet
         if (m_OwnedNodesOnline)
             return;
 
-        if (!m_IsTreasuryHandled)
+        if (!storage::isTreasuryHandled(*m_WalletDB))
         {
             RequestTreasury();
         }
@@ -1538,6 +1503,7 @@ namespace beam::wallet
             return;
 
         bool bAdd = 0 != (proto::Event::Flags::Add & evt.m_Flags);
+        CacheCommitment(evt.m_Commitment, evt.m_Maturity, bAdd);
         ProcessEventUtxo(evt.m_Cid, h, evt.m_Maturity, bAdd, evt.m_User);
     }
 
@@ -1547,7 +1513,6 @@ namespace beam::wallet
         c.m_ID = cid;
         bool bExists = m_WalletDB->findCoin(c);
         c.m_maturity = hMaturity;
-
 
         const auto* data = Output::User::ToPacked(user);
         if (!memis0(data->m_TxID.m_pData, sizeof(TxID)))
@@ -1759,6 +1724,11 @@ namespace beam::wallet
         Block::SystemState::ID id;
         sTip.get_ID(id);
         LOG_INFO() << "Sync up to " << id;
+
+        if (!SyncRemains())
+        {
+            m_Extra.m_ShieldedOutputs = m_WalletDB->get_ShieldedOuts();
+        }
 
         RequestBodies();
         RequestEvents();
@@ -2095,81 +2065,62 @@ namespace beam::wallet
     void Wallet::RestoreTransactionFromShieldedCoin(ShieldedCoin& coin)
     {
         // add virtual transaction for receiver
-        beam::Block::SystemState::Full tip;
-        m_WalletDB->get_History().get_Tip(tip);
-        storage::DeduceStatus(*m_WalletDB, coin, tip.m_Height);
-
-        if (coin.m_Status != ShieldedCoin::Status::Available &&
-            coin.m_Status != ShieldedCoin::Status::Maturing &&
-            coin.m_Status != ShieldedCoin::Status::Spent)
-        {
-            return;
-        }
-
-        const auto* message = ShieldedTxo::User::ToPackedMessage(coin.m_CoinID.m_User);
-        TxID txID;
-        std::copy_n(message->m_TxID.m_pData, 16, txID.begin());
-
-        TxAddressType addressType = TxAddressType::Offline;
-        if (message->m_MaxPrivacyMinAnonymitySet)
-        {
-            addressType = TxAddressType::MaxPrivacy;
-        }
-        else if (!coin.m_CoinID.m_Key.m_IsCreatedByViewer)
-        {
-            addressType = TxAddressType::PublicOffline;
-        }
-
-        auto tx = m_WalletDB->getTx(txID);
-        if (tx)
-        {
-            storage::setTxParameter(*m_WalletDB, txID, TxParameterID::AddressType, addressType, true);
-            storage::setTxParameter(*m_WalletDB, txID, TxParameterID::KernelProofHeight, coin.m_confirmHeight, true);
-            return;
-        }
-        else
-        {
-            WalletAddress receiverAddress;
-            if (message->m_ReceiverOwnID)
-            {
-                m_WalletDB->get_SbbsWalletID(receiverAddress.m_walletID, message->m_ReceiverOwnID);
-                m_WalletDB->get_Identity(receiverAddress.m_Identity, message->m_ReceiverOwnID);
-            }
-            else
-            {
-                // fake address
-                m_WalletDB->createAddress(receiverAddress);
-            }
-
-            auto params = CreateTransactionParameters(TxType::PushTransaction, txID)
-                .SetParameter(TxParameterID::MyID, receiverAddress.m_walletID)
-                .SetParameter(TxParameterID::PeerID, WalletID())
-                .SetParameter(TxParameterID::Status, TxStatus::Completed)
-                .SetParameter(TxParameterID::Amount, coin.m_CoinID.m_Value)
-                .SetParameter(TxParameterID::IsSender, false)
-                .SetParameter(TxParameterID::CreateTime, RestoreCreationTime(tip, coin.m_confirmHeight))
-                .SetParameter(TxParameterID::PeerWalletIdentity, coin.m_CoinID.m_User.m_Sender)
-                .SetParameter(TxParameterID::MyWalletIdentity, receiverAddress.m_Identity)
-                .SetParameter(TxParameterID::KernelID, Merkle::Hash(Zero))
-                .SetParameter(TxParameterID::KernelProofHeight, coin.m_confirmHeight);
-
-            if (message->m_MaxPrivacyMinAnonymitySet)
-            {
-                params.SetParameter(TxParameterID::MaxPrivacyMinAnonimitySet, message->m_MaxPrivacyMinAnonymitySet);
-            }
-            params.SetParameter(TxParameterID::AddressType, addressType);
-
-            auto packed = params.Pack();
-            for (const auto& p : packed)
-            {
-                storage::setTxParameter(*m_WalletDB, *params.GetTxID(), p.first, p.second, true);
-            }
-        }
+        storage::restoreTransactionFromShieldedCoin(*m_WalletDB, coin);
     }
 
     void Wallet::SetTreasuryHandled(bool value)
     {
         m_IsTreasuryHandled = value;
-        storage::setVar(*m_WalletDB, s_szIsTreasuryHandled, value);
+        storage::setTreasuryHandled(*m_WalletDB, value);
+    }
+
+    void Wallet::CacheCommitments()
+    {
+        if (m_IsCommitmentsCached)
+            return;
+
+        m_WalletDB->visitCoins([&](const Coin& c)
+        {
+            if (c.m_status != Coin::Status::Available && c.m_status != Coin::Status::Outgoing)
+                return true;
+
+            ECC::Point comm;
+            if (m_WalletDB->get_CommitmentSafe(comm, c.m_ID))
+            {
+                m_Commitments.emplace(comm, c.m_maturity);
+            }
+            if (c.m_ID.IsBb21Possible())
+            {
+                CoinID cid = c.m_ID;
+                cid.set_WorkaroundBb21();
+                if (m_WalletDB->get_CommitmentSafe(comm, cid))
+                {
+                    m_Commitments.emplace(comm, c.m_maturity);
+                }
+            }
+            return true;
+        });
+        m_IsCommitmentsCached = true;
+    }
+
+    void Wallet::CacheCommitment(const ECC::Point& comm, Height maturity, bool add)
+    {
+        if (m_OwnedNodesOnline)
+            return;
+
+        if (add)
+        {
+            m_Commitments.emplace(comm, maturity);
+        }
+        else
+        {
+            m_Commitments.erase(comm);
+        }
+    }
+
+    void Wallet::ResetCommitmentsCache()
+    {
+        m_Commitments.clear();
+        m_IsCommitmentsCached = false;
     }
 }

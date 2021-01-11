@@ -929,6 +929,11 @@ namespace beam::wallet
         void DeduceStatus(const IWalletDB&, Coin&, Height hTop);
         void DeduceStatus(const IWalletDB&, ShieldedCoin&, Height hTop);
 
+        bool isTreasuryHandled(const IWalletDB&);
+        void setTreasuryHandled(IWalletDB&, bool value);
+        void updateCurrentStateWithTip(IWalletDB& db);
+        void restoreTransactionFromShieldedCoin(IWalletDB& db, ShieldedCoin& coin);
+
         // Used in statistics
         struct Totals
         {
