@@ -35,6 +35,9 @@
 #include <unordered_map>
 #include <boost/algorithm/string.hpp>
 
+#include "base_transaction.h"
+#include "node/processor.h"
+
 #define NOSEP
 #define COMMA ", "
 #define AND " AND "
@@ -956,6 +959,7 @@ namespace beam::wallet
         const char* LastUpdateTimeName = "LastUpdateTime";
         const char* kStateSummaryShieldedOutsDBPath = "StateSummaryShieldedOuts";
         const char* kMaxPrivacyLockTimeLimitHours = "MaxPrivacyLockTimeLimitHours";
+        constexpr char kIsTreasuryHandled[] = "IsTreasuryHandled";
         const uint8_t kDefaultMaxPrivacyLockTimeLimitHours = 72;
         const int BusyTimeoutMs = 5000;
         const int DbVersion   = 29;
@@ -2375,6 +2379,7 @@ namespace beam::wallet
         {
             IWalletDB& m_This;
             IRecoveryProgress& m_Progr;
+            TxoID m_ShieldedOuts = 0;
 
             MyParser(IWalletDB& db, IRecoveryProgress& progr)
                 :m_This(db)
@@ -2395,7 +2400,7 @@ namespace beam::wallet
                 return true;
             }
 
-            virtual bool OnUtxoRecognized(Height h, const Output& outp, CoinID& cid) override
+            virtual bool OnUtxoRecognized(Height h, const Output& outp, CoinID& cid, const Output::User& user) override
             {
                 if (m_This.IsRecoveredMatch(cid, outp.m_Commitment))
                 {
@@ -2409,6 +2414,22 @@ namespace beam::wallet
                     LOG_INFO() << "CoinID: " << c.m_ID << " Maturity=" << c.m_maturity << " Recovered";
 
                     m_This.saveCoin(c);
+
+                    // create event to allow mobile node to detect this UTXO spending
+                    proto::Event::Utxo evt;
+                    evt.m_Flags = proto::Event::Flags::Add;
+                    evt.m_Cid = cid;
+                    evt.m_Commitment = outp.m_Commitment;
+                    evt.m_Maturity = c.m_maturity;
+                    evt.m_User = user;
+
+                    Serializer ser;
+                    ser& uintBigFrom(NodeProcessor::EventKey::s_IdxOutput);
+                    ser& evt.s_Type;
+                    ser& evt;
+
+                    const NodeProcessor::EventKey::Utxo& key = outp.m_Commitment;
+                    m_This.insertEvent(h, Blob(ser.buffer().first, static_cast<uint32_t>(ser.buffer().second)), Blob(&key, sizeof(NodeProcessor::EventKey::Utxo)));
                 }
 
                 return true;
@@ -2439,6 +2460,8 @@ namespace beam::wallet
 
                 m_mapShielded[pars.m_Ticket.m_SpendPk] = sc.m_CoinID.m_Key;
 
+                storage::restoreTransactionFromShieldedCoin(m_This, sc);
+
                 return true;
             }
 
@@ -2462,12 +2485,26 @@ namespace beam::wallet
                 return true;
             }
 
+            bool OnShieldedOut(const ShieldedTxo::DescriptionOutp& d, const ShieldedTxo& s, const ECC::Hash::Value& hvMsg) override
+            {
+                m_ShieldedOuts++;
+                return RecoveryInfo::IRecognizer::OnShieldedOut(d, s, hvMsg);
+            }
+
+
         };
 
         MyParser p(*this, prog);
         p.Init(get_OwnerKdf());
 
-        return p.Proceed(path.c_str());
+        if (p.Proceed(path.c_str()))
+        {
+            storage::setTreasuryHandled(*this, true);
+            set_ShieldedOuts(p.m_ShieldedOuts);
+            storage::updateCurrentStateWithTip(*this);
+            return true;
+        }
+        return false;
 	}
 
     void IWalletDB::get_SbbsPeerID(ECC::Scalar::Native& sk, PeerID& pid, uint64_t ownID)
@@ -5449,6 +5486,127 @@ namespace beam::wallet
                 }
             }
             return height;
+        }
+
+        bool isTreasuryHandled(const IWalletDB& db)
+        {
+            bool res = false;
+            storage::getVar(db, kIsTreasuryHandled, res);
+            return res;
+        }
+
+        void setTreasuryHandled(IWalletDB& db,  bool value)
+        {
+            storage::setVar(db, kIsTreasuryHandled, value);
+        }
+
+        void updateCurrentStateWithTip(IWalletDB& db)
+        {
+            Block::SystemState::Full sTip;
+            db.get_History().get_Tip(sTip);
+
+            Block::SystemState::ID id;
+            if (sTip.m_Height)
+                sTip.get_ID(id);
+            else
+                ZeroObject(id);
+
+            db.setSystemStateID(id);
+            LOG_INFO() << "Current state is " << id;
+        }
+
+        namespace
+        {
+            Timestamp RestoreCreationTime(const Block::SystemState::Full& tip, Height confirmHeight)
+            {
+                Timestamp ts = tip.m_TimeStamp;
+                if (tip.m_Height > confirmHeight)
+                {
+                    auto delta = (tip.m_Height - confirmHeight);
+                    ts -= delta * Rules::get().DA.Target_s;
+                }
+                else if (tip.m_Height < confirmHeight)
+                {
+                    auto delta = confirmHeight - tip.m_Height;
+                    ts += delta * Rules::get().DA.Target_s;
+                }
+                return ts;
+            }
+        }
+
+        void restoreTransactionFromShieldedCoin(IWalletDB& db, ShieldedCoin& coin)
+        {
+            // add virtual transaction for receiver
+            beam::Block::SystemState::Full tip;
+            db.get_History().get_Tip(tip);
+            storage::DeduceStatus(db, coin, tip.m_Height);
+
+            if (coin.m_Status != ShieldedCoin::Status::Available &&
+                coin.m_Status != ShieldedCoin::Status::Maturing &&
+                coin.m_Status != ShieldedCoin::Status::Spent)
+            {
+                return;
+            }
+
+            const auto* message = ShieldedTxo::User::ToPackedMessage(coin.m_CoinID.m_User);
+            TxID txID;
+            std::copy_n(message->m_TxID.m_pData, 16, txID.begin());
+
+            TxAddressType addressType = TxAddressType::Offline;
+            if (message->m_MaxPrivacyMinAnonymitySet)
+            {
+                addressType = TxAddressType::MaxPrivacy;
+            }
+            else if (!coin.m_CoinID.m_Key.m_IsCreatedByViewer)
+            {
+                addressType = TxAddressType::PublicOffline;
+            }
+
+            auto tx = db.getTx(txID);
+            if (tx)
+            {
+                storage::setTxParameter(db, txID, TxParameterID::AddressType, addressType, true);
+                storage::setTxParameter(db, txID, TxParameterID::KernelProofHeight, coin.m_confirmHeight, true);
+                return;
+            }
+            else
+            {
+                WalletAddress receiverAddress;
+                if (message->m_ReceiverOwnID)
+                {
+                    db.get_SbbsWalletID(receiverAddress.m_walletID, message->m_ReceiverOwnID);
+                    db.get_Identity(receiverAddress.m_Identity, message->m_ReceiverOwnID);
+                }
+                else
+                {
+                    // fake address
+                    db.createAddress(receiverAddress);
+                }
+
+                auto params = CreateTransactionParameters(TxType::PushTransaction, txID)
+                    .SetParameter(TxParameterID::MyID, receiverAddress.m_walletID)
+                    .SetParameter(TxParameterID::PeerID, WalletID())
+                    .SetParameter(TxParameterID::Status, TxStatus::Completed)
+                    .SetParameter(TxParameterID::Amount, coin.m_CoinID.m_Value)
+                    .SetParameter(TxParameterID::IsSender, false)
+                    .SetParameter(TxParameterID::CreateTime, RestoreCreationTime(tip, coin.m_confirmHeight))
+                    .SetParameter(TxParameterID::PeerWalletIdentity, coin.m_CoinID.m_User.m_Sender)
+                    .SetParameter(TxParameterID::MyWalletIdentity, receiverAddress.m_Identity)
+                    .SetParameter(TxParameterID::KernelID, Merkle::Hash(Zero))
+                    .SetParameter(TxParameterID::KernelProofHeight, coin.m_confirmHeight);
+
+                if (message->m_MaxPrivacyMinAnonymitySet)
+                {
+                    params.SetParameter(TxParameterID::MaxPrivacyMinAnonimitySet, message->m_MaxPrivacyMinAnonymitySet);
+                }
+                params.SetParameter(TxParameterID::AddressType, addressType);
+
+                auto packed = params.Pack();
+                for (const auto& p : packed)
+                {
+                    storage::setTxParameter(db, *params.GetTxID(), p.first, p.second, true);
+                }
+            }
         }
 
         using nlohmann::json;

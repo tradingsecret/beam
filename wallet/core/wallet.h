@@ -248,6 +248,10 @@ namespace beam::wallet
         void FailVoucherRequest(const WalletID& peerID, const WalletID& myID);
         void RestoreTransactionFromShieldedCoin(ShieldedCoin& coin);
         void SetTreasuryHandled(bool);
+        void CacheCommitments();
+        void CacheCommitment(const ECC::Point& comm, Height maturity, bool add);
+        void ResetCommitmentsCache();
+        bool IsMobileNodeEnabled() const;
 
     private:
 
@@ -428,7 +432,12 @@ namespace beam::wallet
         // Counter of running transaction updates. Used by Cold wallet
         int m_AsyncUpdateCounter = 0;
         bool m_StoredMessagesProcessed = false; // this should happen only once, but not in destructor;
+
+        // data for mobile node support
+        bool m_IsMobileNodeEnabled = true; // simple way to enable/disable mobile node in code
         NodeProcessor::Extra m_Extra = { 0 };
         bool m_IsTreasuryHandled = false;
+        std::map<ECC::Point, Height> m_Commitments;
+        bool m_IsCommitmentsCached = false;
     };
 }
