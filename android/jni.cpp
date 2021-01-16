@@ -583,7 +583,7 @@ void CopyParameter(beam::wallet::TxParameterID paramID, const beam::wallet::TxPa
 }
 
 JNIEXPORT void JNICALL BEAM_JAVA_WALLET_INTERFACE(sendTransaction)(JNIEnv *env, jobject thiz,
-    jstring senderAddr, jstring receiverAddr, jstring comment, jlong amount, jlong fee)
+    jstring senderAddr, jstring receiverAddr, jstring comment, jlong amount, jlong fee, jboolean saveAddress)
 {
     LOG_DEBUG() << "sendTransaction(" << JString(env, senderAddr).value() << ", " << JString(env, receiverAddr).value() << ", " << JString(env, comment).value() << ", " << amount << ", " << fee << ")";
 
@@ -654,7 +654,9 @@ JNIEXPORT void JNICALL BEAM_JAVA_WALLET_INTERFACE(sendTransaction)(JNIEnv *env, 
         params.SetParameter(beam::wallet::TxParameterID::OriginalToken, JString(env, receiverAddr).value());
     }
 
-    params.SetParameter(TxParameterID::SavePeerAddress, false);
+    if(!saveAddress) {
+        params.SetParameter(TxParameterID::SavePeerAddress, false);
+    }
 
     walletModel->getAsync()->startTransaction(std::move(params));
 }
