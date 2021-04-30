@@ -362,7 +362,7 @@ jobs:
     - name: Save version info
       run: |
         echo "BEAM_VERSION=$(cat beam_version.gen)" >> $GITHUB_ENV
-        echo "BEAM_TARGET_SUFFIX=-mainnet" >> $GITHUB_ENV
+        echo "BEAM_TARGET_SUFFIX=" >> $GITHUB_ENV
         rm beam_version.gen
 
 ###############################################################################
@@ -455,7 +455,7 @@ jobs:
     - name: Save version info
       run: |
         echo "BEAM_VERSION=$(cat beam_version.gen)" >> $GITHUB_ENV
-        echo "BEAM_TARGET_SUFFIX=-mainnet" >> $GITHUB_ENV
+        echo "BEAM_TARGET_SUFFIX=" >> $GITHUB_ENV
         rm beam_version.gen
 
 ###############################################################################
@@ -573,7 +573,7 @@ jobs:
     - name: Save version info
       run: |
         echo "BEAM_VERSION=$(cat beam_version.gen)" >> $GITHUB_ENV
-        echo "BEAM_TARGET_SUFFIX=-masternet" >> $GITHUB_ENV
+        echo "BEAM_TARGET_SUFFIX=" >> $GITHUB_ENV
         rm beam_version.gen
 
 ###############################################################################
