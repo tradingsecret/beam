@@ -4,6 +4,7 @@
 #include "../vault/contract.h"
 #include "../BeamHeader.h"
 #include "../Ethash.h"
+#include "../Eth.h"
 
 // Demonstration of the inter-shader interaction.
 
@@ -139,7 +140,8 @@ export void Method_8(Dummy::Hash3& r)
 export void Method_9(Dummy::VerifyBeamHeader& r)
 {
     r.m_Hdr.get_Hash(r.m_Hash, &r.m_RulesCfg);
-    Env::Halt_if(!r.m_Hdr.IsValid(&r.m_RulesCfg));
+    Env::Halt_if(!r.m_Hdr.IsValid<true>(&r.m_RulesCfg));
+    Env::Halt_if(!r.m_Hdr.IsValid<false>(&r.m_RulesCfg));
 
     BeamDifficulty::Raw w0, w1;
     BeamDifficulty::Unpack(w1, r.m_Hdr.m_PoW.m_Difficulty);
@@ -258,4 +260,9 @@ export void Method_13(Dummy::TestEthash2& r)
     _POD_(ep.m_hvRoot) = r.m_EpochRoot;
 
     Ethash::VerifyHdr(ep, r.m_HeaderHash, r.m_Nonce, r.m_Difficulty, &r + 1, static_cast<uint32_t>(-1));
+}
+
+export void Method_14(Dummy::TestEthHeader& r)
+{
+    r.m_Header.get_HashFinal(r.m_HeaderHash, r.m_MixHash);
 }

@@ -1,4 +1,5 @@
 #pragma once
+#include "../Eth.h"
 
 namespace Dummy
 {
@@ -115,9 +116,18 @@ namespace Dummy
 
         // epoch params (dataset size and our root hash), in the future contract must have them all hardcoded.
         uint32_t m_EpochDatasetSize;
-        HashValue m_EpochRoot;
+        Opaque<20> m_EpochRoot;
 
         // followed by the proof
+    };
+
+    struct TestEthHeader
+    {
+        static const uint32_t s_iMethod = 14;
+
+        Eth::Header m_Header;
+        HashValue m_MixHash;
+        HashValue m_HeaderHash; // retval
     };
 
 #pragma pack (pop)

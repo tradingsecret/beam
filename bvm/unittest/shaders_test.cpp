@@ -15,6 +15,7 @@
 #define HOST_BUILD
 
 #include "../../core/block_rw.h"
+#include "../../core/keccak.h"
 #include "../../utility/test_helpers.h"
 #include "../../utility/blobmap.h"
 #include "../bvm2.h"
@@ -124,6 +125,14 @@ namespace Shaders {
 		ConvertOrd<bToShader>(x.m_EpochDatasetSize);
 		ConvertOrd<bToShader>(x.m_Difficulty);
 		ConvertOrd<bToShader>(x.m_Nonce);
+	}
+	template <bool bToShader> void Convert(Dummy::TestEthHeader& x) {
+		ConvertOrd<bToShader>(x.m_Header.m_Difficulty);
+		ConvertOrd<bToShader>(x.m_Header.m_Number);
+		ConvertOrd<bToShader>(x.m_Header.m_GasLimit);
+		ConvertOrd<bToShader>(x.m_Header.m_GasUsed);
+		ConvertOrd<bToShader>(x.m_Header.m_Time);
+		ConvertOrd<bToShader>(x.m_Header.m_Nonce);
 	}
 
 	template <bool bToShader> void Convert(Roulette::Params& x) {
@@ -843,6 +852,7 @@ namespace bvm2 {
 		ContractID m_cidDemoXdao;
 
 		ByteBuffer m_etHashProof;
+		uintBig_t<20> m_hvEpochRoot;
 
 		static void AddCodeEx(ByteBuffer& res, const char* sz, Kind kind)
 		{
@@ -960,6 +970,7 @@ namespace bvm2 {
 				//case 9: Shaders::Dummy::Method_9(CastArg<Shaders::Dummy::VerifyBeamHeader>(pArgs)); return;
 				//case 11: Shaders::Dummy::Method_11(CastArg<Shaders::Dummy::TestRingSig>(pArgs)); return;
 				//case 13: Shaders::Dummy::Method_13(CastArg<Shaders::Dummy::TestEthash2>(pArgs)); return;
+				//case 14: Shaders::Dummy::Method_14(CastArg<Shaders::Dummy::TestEthHeader>(pArgs)); return;
 				//}
 			}
 
@@ -1624,10 +1635,42 @@ namespace bvm2 {
 			args.m_Difficulty = 3250907161412814ULL;
 
 			args.m_EpochDatasetSize = 19922923;
-			args.m_EpochRoot.Scan("41d3b03a0a40ff17692b3f5ea9fd4c5163660f5c637a5c961a64061202822099");
+			args.m_EpochRoot = m_hvEpochRoot;
 
 			verify_test(RunGuarded(cid, args.s_iMethod, buf, nullptr));
 		}
+
+		{
+			Shaders::Dummy::TestEthHeader args;
+			ZeroObject(args);
+
+			args.m_Header.m_ParentHash.Scan("1e77d8f1267348b516ebc4f4da1e2aa59f85f0cbd853949500ffac8bfc38ba14");
+			args.m_Header.m_UncleHash.Scan("1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347");
+			args.m_Header.m_Coinbase.Scan("2a65aca4d5fc5b5c859090a6c34d164135398226");
+			args.m_Header.m_Root.Scan("0b5e4386680f43c224c5c037efc0b645c8e1c3f6b30da0eec07272b4e6f8cd89");
+			args.m_Header.m_TxHash.Scan("56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421");
+			args.m_Header.m_ReceiptHash.Scan("56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421");
+			args.m_Header.m_Bloom = Zero;
+			args.m_Header.m_Extra.Scan("d583010202844765746885676f312e35856c696e7578");
+			args.m_Header.m_Difficulty = 6022643743806;
+			args.m_Header.m_Number = 400000; // height
+			args.m_Header.m_GasLimit = 3141592;
+			args.m_Header.m_GasUsed = 0;
+			args.m_Header.m_Time = 1445130204;
+
+			args.m_Header.m_Nonce = 0x6af23caae95692ef;
+			args.m_MixHash.Scan("3fbea7af642a4e20cd93a945a1f5e23bd72fc5261153e09102cf718980aeff38");
+
+			verify_test(RunGuarded_T(cid, args.s_iMethod, args));
+
+			ECC::Hash::Value hvExp;
+			hvExp.Scan("5d15649e25d8f3e2c0374946078539d200710afc977cdfc6a977bd23f20fa8e8");
+			verify_test(hvExp == args.m_HeaderHash);
+
+
+
+		}
+
 
 		verify_test(ContractDestroy_T(cid, zero));
 	}
@@ -2455,15 +2498,89 @@ namespace bvm2 {
 
 namespace EthashUtils
 {
+	typedef Shaders::Dummy::Ethash::ProofBase ProofBase;
+
+	void EvaluateElement(ProofBase::THash& hv, ProofBase::TCount n, const ethash_epoch_context& ctx)
+	{
+		auto item = ethash::calculate_dataset_item_1024(ctx, n);
+
+		ECC::Hash::Processor()
+			<< Blob(item.bytes, sizeof(item.bytes))
+			>> hv;
+	}
+
+
 	struct Hdr
 	{
 		uint32_t m_FullItems;
 		uint32_t m_CacheItems;
+		uint32_t m_h0; // height from which the hashes are stored
+
+		// followed by the cache
+		// followed by the tree hashes
 	};
 
-	typedef ECC::Hash::Value Hash;
+	struct MyMultiProofBase
+		:public Shaders::Dummy::Ethash::ProofBase
+	{
+		std::vector<THash> m_vRes;
 
-	void GenerateLocalData(uint32_t iEpoch, const char* szPath)
+		void ProofPushZero()
+		{
+			m_vRes.emplace_back() = Zero;
+		}
+
+		void ProofMerge()
+		{
+			assert(m_vRes.size() >= 2);
+			auto& hv = m_vRes[m_vRes.size() - 2];
+
+			ECC::Hash::Processor() << hv << m_vRes.back() >> hv;
+			m_vRes.pop_back();
+		}
+	};
+
+	struct MyMultiProof
+		:public MyMultiProofBase
+	{
+		const THash* m_pHashes;
+		const Hdr* m_pHdr;
+		const ethash_epoch_context* m_pCtx;
+
+		bool ProofPush(TCount n, TCount nHalf)
+		{
+			Merkle::Position pos;
+
+			for (pos.H = 0; nHalf; pos.H++)
+			{
+				nHalf >>= 1;
+				assert(!(1 & n));
+				n >>= 1;
+			}
+
+			pos.X = n;
+
+			uint8_t h0 = static_cast<uint8_t>(ByteOrder::from_le(m_pHdr->m_h0));
+			if (pos.H < h0)
+			{
+				if (pos.H)
+					return false;
+
+				EvaluateElement(m_vRes.emplace_back(), n, *m_pCtx);
+			}
+			else
+			{
+				auto iHash = Merkle::FlatMmr::Pos2Idx(pos, h0);
+				m_vRes.push_back(m_pHashes[iHash]);
+			}
+
+			return true;
+		}
+
+	};
+
+
+	void GenerateLocalData(uint32_t iEpoch, const char* szPath, uint32_t h0)
 	{
 		ethash_epoch_context* pCtx = ethash_create_epoch_context(iEpoch);
 
@@ -2472,105 +2589,80 @@ namespace EthashUtils
 		Hdr hdr;
 		hdr.m_FullItems = ByteOrder::to_le(nFullItems);
 		hdr.m_CacheItems = ByteOrder::to_le((uint32_t) pCtx->light_cache_num_items);
+		hdr.m_h0 = ByteOrder::to_le(h0);
 
 		std::FStream fs;
 		fs.Open(szPath, false, true);
 		fs.write(&hdr, sizeof(hdr));
 
-		Merkle::FixedMmr fmmr;
-		fmmr.Resize(nFullItems); // huge!
-
-		for (uint32_t i = 0; i < nFullItems; i++)
-		{
-			auto item = ethash::calculate_dataset_item_1024(*pCtx, i);
-
-			ECC::Hash::Value hv;
-			ECC::Hash::Processor()
-				<< Blob(item.bytes, sizeof(item.bytes))
-				>> hv;
-
-			fmmr.Append(hv);
-		}
-
 		fs.write(pCtx->light_cache, sizeof(*pCtx->light_cache) * pCtx->light_cache_num_items);
 
-		auto& v = fmmr.get_Data();
-		fs.write(&v.front(), sizeof(v.front())* v.size());
+		MyMultiProofBase wrk;
+
+		for (uint32_t i = 0; i < nFullItems; )
+		{
+			EvaluateElement(wrk.m_vRes.emplace_back(), i, *pCtx);
+
+			uint32_t nPos = ++i;
+			for (uint32_t h = 0; ; h++, nPos >>= 1)
+			{
+				if (h >= h0)
+					fs.write(&wrk.m_vRes.back(), sizeof(ProofBase::THash));
+
+				if (1 & nPos)
+					break;
+
+				wrk.ProofMerge();
+			}
+		}
 
 		ethash_destroy_epoch_context(pCtx);
 	}
 
-	struct MultiItemProofBuilder
+	void CropLocalData(const char* szDst, const char* szSrc, uint32_t dh)
 	{
-		const Hash* m_pHashes; // flat array
-		uint32_t m_Count;
+		MappedFileRaw fmp;
+		fmp.Open(szSrc);
 
-		std::vector<Hash> m_vRes;
+		auto& hdrSrc = fmp.get_At<Hdr>(0);
+		uint32_t nSizeCache = sizeof(ethash_hash512) * ByteOrder::from_le(hdrSrc.m_CacheItems);
+		uint32_t nFullItems = ByteOrder::from_le(hdrSrc.m_FullItems);
+		uint32_t h0 = ByteOrder::from_le(hdrSrc.m_h0);
 
-		static uint64_t Pos2Idx(const Merkle::Position& pos)
+		auto pCache = &fmp.get_At<ProofBase::THash>(sizeof(Hdr));
+		auto pHashes = &fmp.get_At<ProofBase::THash>(sizeof(Hdr) + nSizeCache);
+
+		Hdr hdrDst = hdrSrc;
+		hdrDst.m_h0 = ByteOrder::to_le(h0 + dh);
+
+		std::FStream fs;
+		fs.Open(szDst, false, true);
+		fs.write(&hdrDst, sizeof(hdrDst));
+		fs.write(pCache, nSizeCache);
+
+		uint32_t nHashes0 = static_cast<uint32_t>(Merkle::FlatMmr::get_TotalHashes(nFullItems, static_cast<uint8_t>(h0)));
+		Merkle::Position pos;
+		ZeroObject(pos);
+
+		for (uint32_t i = 0; i < nHashes0; i++)
 		{
-			return Merkle::FlatMmr::Pos2Idx(pos, 0);
-		}
+			if (pos.H >= dh)
+				fs.write(pHashes + i, sizeof(ProofBase::THash));
 
-		void Build(uint32_t* pIndices, uint32_t nIndices)
-		{
-			assert(m_Count);
+			const uint32_t nMsk = (2U << pos.H) - 1;
 
-			Merkle::Position pos;
-			pos.H = 0;
-			pos.X = 0;
-
-			while ((1ULL << pos.H) < m_Count)
+			if (nMsk == (pos.X & nMsk))
 				pos.H++;
-
-			BEAM_VERIFY(Build2(pIndices, nIndices, pos, false));
-		}
-
-	private:
-
-		bool Build2(uint32_t* pIndices, uint32_t nIndices, Merkle::Position pos, bool bFull)
-		{
-			if (!bFull)
-			{
-				uint64_t nVal = pos.X << pos.H;
-				if (nVal >= m_Count)
-					return false; // out-of-bounds
-
-				nVal += 1ULL << pos.H;
-				if (nVal <= m_Count)
-					bFull = true;
-			}
-
-			if (!pos.H || (!nIndices && bFull))
-			{
-				if (!nIndices)
-					m_vRes.push_back(m_pHashes[Pos2Idx(pos)]);
-			}
 			else
 			{
-				pos.X <<= 1;
-				pos.H--;
-				uint32_t nMid = static_cast<uint32_t>((pos.X + 1) << pos.H);
-
-				auto n0 = Shaders::PivotSplit(pIndices, nIndices, nMid);
-
-				BEAM_VERIFY(Build2(pIndices, n0, pos, bFull));
-
+				pos.H = 0;
 				pos.X++;
-				bool bRes = Build2(pIndices + n0, nIndices - n0, pos, bFull);
-
-				if (bRes && !nIndices)
-				{
-					Merkle::Interpret(m_vRes[m_vRes.size() - 2], m_vRes.back(), true);
-					m_vRes.pop_back();
-				}
 			}
-
-			return true;
 		}
-	};
+	}
 
-	uint32_t GenerateProof(const char* szPath, const uintBig_t<64>& hvSeed, ByteBuffer& res, Hash& hvRoot)
+
+	uint32_t GenerateProof(const char* szPath, const uintBig_t<64>& hvSeed, ByteBuffer& res, ProofBase::THash& hvRoot)
 	{
 		MappedFileRaw fmp;
 		fmp.Open(szPath);
@@ -2590,20 +2682,23 @@ namespace EthashUtils
 
 		ethash_get_MixHash2((ethash_hash256*)hvMix.m_pData, pSolIndices, pSolItems, &ctx, (ethash_hash512*)hvSeed.m_pData);
 
-		MultiItemProofBuilder mpb;
-		mpb.m_pHashes = &fmp.get_At<ECC::Hash::Value>(sizeof(Hdr) + sizeof(ethash_hash512) * ctx.light_cache_num_items);
-		mpb.m_Count = ctx.full_dataset_num_items;
+		typedef Shaders::Dummy::MultiProof::Builder<MyMultiProof> MyBuilder;
+		Shaders::Dummy::MultiProof::Builder<MyMultiProof> mpb;
 
-		mpb.Build(nullptr, 0); // root
+		mpb.m_pHdr = &hdr;
+		mpb.m_pCtx = &ctx;
+		mpb.m_pHashes = &fmp.get_At<MyBuilder::THash>(sizeof(Hdr) + sizeof(ethash_hash512) * ctx.light_cache_num_items);
+
+		mpb.Build(nullptr, 0, ctx.full_dataset_num_items); // root
 
 		hvRoot = mpb.m_vRes.front();
 		mpb.m_vRes.clear();
 
-		mpb.Build(pSolIndices, _countof(pSolIndices)); // proof for this set of indices
+		mpb.Build(pSolIndices, _countof(pSolIndices), ctx.full_dataset_num_items); // proof for this set of indices
 
-		res.resize(sizeof(pSolItems) + sizeof(Hash) * mpb.m_vRes.size());
+		res.resize(sizeof(pSolItems) + sizeof(ProofBase::THash) * mpb.m_vRes.size());
 		memcpy(&res.front(), pSolItems, sizeof(pSolItems));
-		memcpy(&res.front() + sizeof(pSolItems), &mpb.m_vRes.front(), sizeof(Hash) * mpb.m_vRes.size());
+		memcpy(&res.front() + sizeof(pSolItems), &mpb.m_vRes.front(), sizeof(ProofBase::THash) * mpb.m_vRes.size());
 
 		return ctx.full_dataset_num_items;
 	}
@@ -2633,11 +2728,13 @@ int main()
 		MyProcessor proc;
 /*
 		{
+			//beam::EthashUtils::GenerateLocalData(176, "S:\\my_epoch-176-3.bin", 3); // skip 1st 3 levels, size reduction of 2^3 == 8
+			//beam::EthashUtils::CropLocalData("S:\\my_epoch-176-5.bin", "S:\\my_epoch-176-3.bin", 2); // skip 2 more levels
+
 			uintBig_t<64> hvSeed;
 			hvSeed.Scan("46cac938dbb96820c759754a01ee2a4586be377fb82baac75c2586a3d868537a9aa4e7a18324f01739dd31ab327b8b0e10b7bb1f8ddcd814bc24f870039c4c54");
 
-			ECC::Hash::Value hvEpochRoot;
-			beam::EthashUtils::GenerateProof("S:\\my_epoch-176.bin", hvSeed, proc.m_etHashProof, hvEpochRoot);
+			beam::EthashUtils::GenerateProof("S:\\my_epoch-176-5.bin", hvSeed, proc.m_etHashProof, proc.m_hvEpochRoot);
 		}
 */
 		proc.TestAll();
