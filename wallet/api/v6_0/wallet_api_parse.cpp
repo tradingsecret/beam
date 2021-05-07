@@ -1040,23 +1040,14 @@ namespace beam::wallet
             {"result", json::array()}
         };
 
-        for (auto& utxo : res.utxos)
+        for (auto& c : res.coins)
         {
-            std::string createTxId = utxo.m_createTxId.is_initialized() ? std::to_string(*utxo.m_createTxId) : "";
-            std::string spentTxId = utxo.m_spentTxId.is_initialized() ? std::to_string(*utxo.m_spentTxId) : "";
-
             msg["result"].push_back(
-            {
-                {"id", utxo.toStringID()},
-                {"asset_id", utxo.m_ID.m_AssetID},
-                {"amount", utxo.m_ID.m_Value},
-                {"type", (const char*)FourCC::Text(utxo.m_ID.m_Type)},
-                {"maturity", utxo.get_Maturity(res.confirmations_count)},
-                {"createTxId", createTxId},
-                {"spentTxId", spentTxId},
-                {"status", utxo.m_status},
-                {"status_string", utxo.getStatusString()}
-            });
+                {
+#define MACRO(name, type) {#name, c.name},
+                    BEAM_GET_UTXO_RESPONSE_FIELDS(MACRO)
+                });
+#undef MACRO
         }
     }
 
@@ -1339,22 +1330,33 @@ namespace beam::wallet
 
     void WalletApi::getResponse(const JsonRpcId& id, const VerifyPaymentProof::Response& res, json& msg)
     {
-        msg = json
+        auto f = [&id](auto& pi)
         {
-            {JsonRpcHeader, JsonRpcVersion},
-            {"id", id},
-            {"result",
-                {
-                    {"is_valid", res.paymentInfo.IsValid()},
+            return json
+            {
+                {JsonRpcHeader, JsonRpcVersion},
+                {"id", id},
+                {"result",
+                    {
+                        {"is_valid", pi.IsValid()},
 
-                    {"sender", std::to_string(res.paymentInfo.m_Sender)},
-                    {"receiver", std::to_string(res.paymentInfo.m_Receiver)},
-                    {"amount", res.paymentInfo.m_Amount},
-                    {"kernel", std::to_string(res.paymentInfo.m_KernelID)},
-                    {"asset_id", res.paymentInfo.m_AssetID}
-                    //{"signature", std::to_string(res.paymentInfo.m_Signature)}
+                        {"sender", std::to_string(pi.m_Sender)},
+                        {"receiver", std::to_string(pi.m_Receiver)},
+                        {"amount", pi.m_Amount},
+                        {"kernel", std::to_string(pi.m_KernelID)},
+                        {"asset_id", pi.m_AssetID}
+                        //{"signature", std::to_string(res.paymentInfo.m_Signature)}
+                    }
                 }
-            }
+            };
         };
+        if (res.paymentInfo)
+        {
+            msg = f(*res.paymentInfo);
+        }
+        else if (res.shieldedPaymentInfo)
+        {
+            msg = f(*res.shieldedPaymentInfo);
+        }
     }
 }
