@@ -1860,7 +1860,7 @@ namespace beam
 
 		pForks[1].m_Height = 321321; // mainnet hard fork
 		pForks[2].m_Height = 777777;
-                pForks[3].m_Height = 1260000;
+		pForks[3].m_Height = 1280000;
 
 		// future forks
 		for (size_t i = 4; i < _countof(pForks); i++)
