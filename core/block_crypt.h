@@ -315,7 +315,7 @@ namespace beam
 
 		struct
 		{
-			uint32_t v0 = 15; // 15 for masternet and testnet, 14 for mainnet
+			uint32_t v0 = 16; // 15 for masternet and testnet, 14 for mainnet
 			uint32_t v2 = 2;
 			bool IsTestnet = false; // true for testnet, false for masternet and mainnet
 		} Magic;
