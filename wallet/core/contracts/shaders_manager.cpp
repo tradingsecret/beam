@@ -29,7 +29,7 @@ namespace beam::wallet {
         assert(_wdb);
         assert(_wallet);
         assert(nodeNetwork);
-
+        _logResult = appid.empty();
         m_pPKdf = _wdb->get_OwnerKdf();
         m_pNetwork = std::move(nodeNetwork);
         m_pHist = &_wdb->get_History();
@@ -237,7 +237,10 @@ namespace beam::wallet {
         }
 
         boost::optional<std::string> result = m_Out.str();
-        LOG_VERBOSE () << "Shader result: " << *result;
+        if (_logResult)
+        {
+            LOG_INFO () << "Shader result: " << std::string_view(result ? *result : std::string()).substr(0, 200);
+        }
 
         if (m_vInvokeData.empty())
         {
