@@ -496,7 +496,7 @@ namespace beam::wallet
 
     void Wallet::RequestHandler::OnComplete(Request& r)
     {
-        uint32_t n = get_ParentObj().SyncRemains();
+        auto n = get_ParentObj().SyncRemains();
 
         switch (r.get_Type())
         {
@@ -746,10 +746,12 @@ namespace beam::wallet
         {
         case TxType::VoucherRequest:
             {
+                LOG_DEBUG() << "Got voucher request!";
                 auto pKeyKeeper = m_WalletDB->get_KeyKeeper();
                 if (!pKeyKeeper                                         // We can generate the ticket with OwnerKey, but can't sign it.
                  || !CanDetectCoins())                                  // The wallet has no ability to recognize received shielded coin
                 {
+                    LOG_ERROR() << "Cannot send voucher" << TRACE(pKeyKeeper) << TRACE(CanDetectCoins());
                     FailVoucherRequest(msg.m_From, myID);
                     return; 
                 }
@@ -759,6 +761,7 @@ namespace beam::wallet
 
                 if (!nCount)
                 {
+                    LOG_ERROR() << "Cannot send voucher" << TRACE(nCount);
                     FailVoucherRequest(msg.m_From, myID);
                     return; //?!
                 }
@@ -768,11 +771,11 @@ namespace beam::wallet
                     return;
 
                 auto res = GenerateVoucherList(pKeyKeeper, address->m_OwnID, nCount);
-
+                LOG_DEBUG() << "Generated voucher list, size: " << res.size();
                 SetTxParameter msgOut;
                 msgOut.m_Type = TxType::VoucherResponse;
                 msgOut.m_From = myID;
-                msgOut.AddParameter(TxParameterID::ShieldedVoucherList, std::move(res));
+                msgOut.AddParameter(TxParameterID::ShieldedVoucherList, res);
 
                 SendSpecialMsg(msg.m_From, msgOut);
 
@@ -1374,6 +1377,7 @@ namespace beam::wallet
         PreprocessBlock(block);
         recognizer.Recognize(block, h, 0, false);
         SetEventsHeight(h);
+        ++m_BlocksDone;
     }
 
     void Wallet::PreprocessBlock(TxVectors::Full& block)
@@ -1411,8 +1415,12 @@ namespace beam::wallet
         if (!IsMobileNodeEnabled())
             return;
 
+        Block::SystemState::Full tip;
+        get_tip(tip);
+
         if (!storage::isTreasuryHandled(*m_WalletDB))
         {
+            m_RequestedBlocks = tip.m_Height;
             RequestTreasury();
         }
         else
@@ -1420,12 +1428,22 @@ namespace beam::wallet
             Height nextEvent = GetEventsHeightNext();
             if (nextEvent) 
             {
-                RequestBodies(nextEvent - 1, nextEvent);
+                --nextEvent;
+                if (!m_RequestedBlocks)
+                {
+                    m_RequestedBlocks = tip.m_Height - nextEvent;
+                }
+                else
+                {
+                    // new tip
+                    ++m_RequestedBlocks;
+                }
             }
             else
             {
-                RequestBodies(nextEvent, nextEvent + 1);
+                m_RequestedBlocks = tip.m_Height;
             }
+            RequestBodies(nextEvent, nextEvent + 1);
         }
     }
 
@@ -1587,7 +1605,7 @@ namespace beam::wallet
         storage::setNextEventHeight(*m_WalletDB, h + 1); // we're actually saving the next
     }
 
-    Height Wallet::GetEventsHeightNext()
+    Height Wallet::GetEventsHeightNext() const
     {
         return storage::getNextEventHeight(*m_WalletDB);
     }
@@ -1871,7 +1889,7 @@ namespace beam::wallet
         PostReqUnique(*pReq);
     }
 
-    uint32_t Wallet::SyncRemains() const
+    size_t Wallet::SyncRemains() const
     {
         size_t val =
 #define THE_MACRO(type) m_Pending##type.size() +
@@ -1879,7 +1897,21 @@ namespace beam::wallet
 #undef THE_MACRO
             0;
 
-        return static_cast<uint32_t>(val);
+        return val;
+    }
+
+    size_t Wallet::GetSyncDone() const
+    {
+        auto val = SyncRemains();
+        assert(val <= m_LastSyncTotal);
+        size_t done = m_LastSyncTotal - val;
+        done += m_BlocksDone;
+        return done;
+    }
+
+    size_t Wallet::GetSyncTotal() const
+    {
+        return m_LastSyncTotal + m_RequestedBlocks;
     }
 
     void Wallet::CheckSyncDone()
@@ -1890,6 +1922,8 @@ namespace beam::wallet
             return;
 
         m_LastSyncTotal = 0;
+        m_RequestedBlocks = 0;
+        m_BlocksDone = 0;
 
         SaveKnownState();
     }
@@ -1954,12 +1988,12 @@ namespace beam::wallet
 
     void Wallet::NotifySyncProgress()
     {
-        uint32_t n = SyncRemains();
-        int total = m_LastSyncTotal;
-        int done = m_LastSyncTotal - n;
+        auto total = GetSyncTotal();
+        auto done = GetSyncDone();
+        assert(done <= total);
         for (const auto sub : m_subscribers)
         {
-            sub->onSyncProgress(done, total);
+            sub->onSyncProgress(static_cast<int>(done), static_cast<int>(total));
         }
     }
 
@@ -1967,11 +2001,11 @@ namespace beam::wallet
     {
         if (!m_LastSyncTotal)
             return;
-
-        uint32_t nDone = m_LastSyncTotal - SyncRemains();
-        assert(nDone <= m_LastSyncTotal);
-        int p = static_cast<int>((nDone * 100) / m_LastSyncTotal);
-        LOG_INFO() << "Synchronizing with node: " << p << "% (" << nDone << "/" << m_LastSyncTotal << ")";
+        auto total = GetSyncTotal();
+        auto done = GetSyncDone();
+        assert(done <= total);
+        int p = static_cast<int>((done * 100) / total);
+        LOG_INFO() << "Synchronizing with node: " << p << "% (" << done << "/" << total << ")";
 
         NotifySyncProgress();
     }
