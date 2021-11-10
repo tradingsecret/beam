@@ -3528,6 +3528,7 @@ namespace beam::wallet
     {
         storage::setVar(*this, SystemStateIDName, stateID);
         storage::setVar(*this, LastUpdateTimeName, getTimestamp());
+        LOG_DEBUG() << TRACE(getCurrentHeight()) << TRACE(stateID.m_Height);
         notifySystemStateChanged(stateID);
     }
 
