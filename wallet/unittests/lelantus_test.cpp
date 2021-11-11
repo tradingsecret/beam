@@ -93,12 +93,16 @@ void TestTreasuryRestore()
     io::Reactor::Scope scope(*mainReactor);
 
     int completedCount = 1;
-    auto completeAction = [&mainReactor, &completedCount](auto)
+    std::weak_ptr<Wallet> receiverWalletPtr;
+    auto completeAction = [&receiverWalletPtr, &mainReactor, &completedCount](auto)
     {
         --completedCount;
         if (completedCount == 0)
         {
-            mainReactor->stop();
+            if (auto w = receiverWalletPtr.lock(); w && w->IsWalletInSync())
+            {
+                mainReactor->stop();
+            }
         }
     };
 
@@ -109,6 +113,7 @@ void TestTreasuryRestore()
     TestWalletRig receiver(receiverWalletDB, completeAction, TestWalletRig::RegularWithoutPoWBbs);
     sender.m_Wallet->RegisterTransactionType(TxType::PushTransaction, std::make_shared<lelantus::PushTransaction::Creator>(senderWalletDB));
     receiver.m_Wallet->RegisterTransactionType(TxType::PushTransaction, std::make_shared<lelantus::PushTransaction::Creator>(receiverWalletDB));
+    receiverWalletPtr = receiver.m_Wallet;
 
     sender.m_Wallet->Rescan();
     Node node;
