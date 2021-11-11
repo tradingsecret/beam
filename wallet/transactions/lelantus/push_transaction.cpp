@@ -34,8 +34,9 @@ namespace beam::wallet::lelantus
 
     TxParameters PushTransaction::Creator::CheckAndCompleteParameters(const TxParameters& parameters)
     {
-        wallet::CheckSenderAddress(parameters, m_walletDB);
-        return wallet::ProcessReceiverAddress(parameters, m_walletDB, false);
+        auto walletDB = m_dbFunc();
+        wallet::CheckSenderAddress(parameters, walletDB);
+        return wallet::ProcessReceiverAddress(parameters, walletDB, false);
     }
 
     PushTransaction::PushTransaction(const TxContext& context)
