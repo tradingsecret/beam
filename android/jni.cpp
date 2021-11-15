@@ -768,10 +768,10 @@ JNIEXPORT void JNICALL BEAM_JAVA_WALLET_INTERFACE(saveAddress)(JNIEnv *env, jobj
                 addr.m_OwnID = getLongField(env, WalletAddressClass, walletAddrObj, "own");
                 addr.m_Address = getStringField(env, WalletAddressClass, walletAddrObj, "address");
 
-                if(own) 
+                bool isValid = false;
+                auto buf = from_hex(getStringField(env, WalletAddressClass, walletAddrObj, "identity"), &isValid);
+                if(isValid)
                 {
-                    bool isValid = false;
-                    auto buf = from_hex(getStringField(env, WalletAddressClass, walletAddrObj, "identity"), &isValid);
                     PeerID m_Identity = Blob(buf);
                     addr.m_Identity = m_Identity;
                 }
