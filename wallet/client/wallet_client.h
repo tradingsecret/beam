@@ -41,6 +41,7 @@
 
 #include <thread>
 #include <atomic>
+#include <functional>
 
 namespace beam::wallet
 {
@@ -101,7 +102,11 @@ namespace beam::wallet
         , private IVerificationObserver
     {
     public:
+
+        using OpenDBFunction = std::function<IWalletDB::Ptr()>;
+        WalletClient(const Rules& rules, IWalletDB::Ptr walletDB, OpenDBFunction&& walletDBFunc, const std::string& nodeAddr, io::Reactor::Ptr reactor);
         WalletClient(const Rules& rules, IWalletDB::Ptr walletDB, const std::string& nodeAddr, io::Reactor::Ptr reactor);
+        WalletClient(const Rules& rules, OpenDBFunction&& walletDBFunc, const std::string& nodeAddr, io::Reactor::Ptr reactor); // lazy DB creation ctor
         virtual ~WalletClient();
 
         void start( std::map<Notification::Type,bool> activeNotifications,
@@ -110,6 +115,7 @@ namespace beam::wallet
 
         IWalletModelAsync::Ptr getAsync();
         Wallet::Ptr getWallet(); // can return null
+        IWalletDB::Ptr getWalletDB();
 
         IShadersManager::Ptr IWThread_createAppShaders(const std::string& appid, const std::string& appname);
 
@@ -150,8 +156,6 @@ namespace beam::wallet
         // Call this before derived class is destructed to ensure
         // that no virtual function calls below will result in purecall
         void stopReactor(bool detachThread = false);
-
-        IWalletDB::Ptr getWalletDB();
 
         // use this function to post function call to client's main loop
         using MessageFunction = std::function<void()>;
@@ -386,5 +390,6 @@ namespace beam::wallet
         std::vector<std::pair<beam::Height, beam::TxoID>> m_shieldedCountHistoryPart;
         beam::TxoID m_shieldedPer24h = 0;
         uint8_t m_mpLockTimeLimit = 0;
+        OpenDBFunction m_openDBFunc;
     };
 }

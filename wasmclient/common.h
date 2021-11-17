@@ -1,4 +1,4 @@
-// Copyright 2018 The Beam Team
+// Copyright 2018-2021 The Beam Team
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -11,13 +11,6 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-#include "lelantus_reg_creators.h"
-#include "push_transaction.h"
+#pragma once
 
-namespace beam::wallet::lelantus
-{
-    void RegisterCreators(Wallet& wallet, IWalletDB::Ptr walletDB)
-    {
-        wallet.RegisterTransactionType(TxType::PushTransaction, std::make_shared<PushTransaction::Creator>([=]() {return walletDB; }));
-    }
-}
+void AssertMainThread();

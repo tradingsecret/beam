@@ -11,13 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-#include "lelantus_reg_creators.h"
-#include "push_transaction.h"
 
-namespace beam::wallet::lelantus
-{
-    void RegisterCreators(Wallet& wallet, IWalletDB::Ptr walletDB)
-    {
-        wallet.RegisterTransactionType(TxType::PushTransaction, std::make_shared<PushTransaction::Creator>([=]() {return walletDB; }));
-    }
-}
+#include "wallet/api/i_wallet_api.h"
+#include "wallet/core/contracts/i_shaders_manager.h"
+#include "wallet/client/apps_api/apps_api.h"
+
+std::string GenerateAppID(const std::string& appName, const std::string& appUrl);
+std::string StripAppIDPrefix(const std::string& appId);
