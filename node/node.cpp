@@ -2012,7 +2012,7 @@ bool Node::Peer::GetBlock(proto::BodyBuffers& out, const NodeDB::StateID& sid, c
         for (size_t i = 0; i < block.m_vOutputs.size(); i++)
         {
             const auto& outp = *block.m_vOutputs[i];
-            yas::detail::saveRecovery(ser, outp);
+            yas::detail::saveRecovery(ser, outp, sid.m_Height);
         }
 
 		ser & Cast::Down<Block::BodyBase>(block);
@@ -4659,7 +4659,6 @@ bool Node::GenerateRecoveryInfo(const char* szPath)
 			der & outp;
 
             assert(outp.m_Commitment == d.m_Commitment);
-            outp.m_RecoveryOnly = true;
 
 			// 2 ways to discover the UTXO create height: either directly by looking its TxoID in States table, or reverse-engineer it from Maturity
 			// Since currently maturity delta is independent of current height (not a function of height, not changed in current forks) - we prefer the 2nd method, which is faster.
@@ -4671,7 +4670,8 @@ bool Node::GenerateRecoveryInfo(const char* szPath)
 
             MySerializer ser(m_Writer.m_Stream);
             ser & hCreateHeight;
-            ser & outp;
+
+            yas::detail::saveRecovery(ser, outp, hCreateHeight);
 		}
 	};
 
