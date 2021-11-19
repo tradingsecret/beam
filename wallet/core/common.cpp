@@ -788,13 +788,13 @@ namespace beam::wallet
                 switch (m_status)
                 {
                 case TxStatus::Registering:
-                    return m_selfTx ? "sending max privacy to own address" : "in progress max privacy";
+                    return m_selfTx ? "sending maximum anonymity to own address" : "in progress maximum anonymity";
                 case TxStatus::Failed:
-                    return TxFailureReason::TransactionExpired == m_failureReason ? "expired" : "failed max privacy";
+                    return TxFailureReason::TransactionExpired == m_failureReason ? "expired" : "failed maximum anonymity";
                 case TxStatus::Canceled:
-                    return "canceled max privacy";
+                    return "canceled maximum anonymity";
                 case TxStatus::Completed:
-                    return m_selfTx ? "sent max privacy to own address" : (m_sender ? "sent max privacy" : "received max privacy");
+                    return m_selfTx ? "sent maximum anonymity to own address" : (m_sender ? "sent maximum anonymity" : "received maximum anonymity");
                 default:
                     break;
                 }
@@ -880,6 +880,38 @@ namespace beam::wallet
             break;
         }
         return TxStatusInterpreter::getStatus();
+    }
+
+    std::string interpretStatus(const TxDescription& tx)
+    {
+        std::unique_ptr<beam::wallet::TxStatusInterpreter> statusInterpreter;
+        if (tx.m_txType == wallet::TxType::Simple)
+        {
+            statusInterpreter = std::make_unique<beam::wallet::SimpleTxStatusInterpreter>(tx);
+        }
+        else if (tx.m_txType == wallet::TxType::PushTransaction)
+        {
+            statusInterpreter = std::make_unique<beam::wallet::MaxPrivacyTxStatusInterpreter>(tx);
+        }
+        else if (tx.m_txType >= wallet::TxType::AssetIssue && tx.m_txType <= wallet::TxType::AssetInfo)
+        {
+            statusInterpreter = std::make_unique<beam::wallet::AssetTxStatusInterpreter>(tx);
+        }
+        else if (tx.m_txType == wallet::TxType::Contract)
+        {
+            statusInterpreter = std::make_unique<beam::wallet::ContractTxStatusInterpreter>(tx);
+        }
+        else if (tx.m_txType == wallet::TxType::DexSimpleSwap)
+        {
+            statusInterpreter = std::make_unique<beam::wallet::SimpleTxStatusInterpreter>(tx);
+        }
+        else
+        {
+            BOOST_ASSERT_MSG(false, kErrorUnknownTxType);
+            return "unknown";
+        }
+
+        return statusInterpreter->getStatus();
     }
 
     TxDescription::TxDescription(const TxParameters& p)
