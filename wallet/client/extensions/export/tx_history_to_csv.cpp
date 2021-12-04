@@ -66,11 +66,11 @@ std::string ExportTxHistoryToCsv(const IWalletDB& db)
        << "\"Unit name\"" << ","
        << "\"Amount, USD\"" << ","
        << "\"Amount, BTC\"" << ","
-       << "\"Transaction fee, BEAM\"" << ","
+       << "\"Transaction fee, ARC\"" << ","
        << "Status" << ","
-       << "Comment" << "," 
+       << "Comment" << ","
        << "Transaction ID" << ","
-       << "Kernel ID" << "," 
+       << "Kernel ID" << ","
        << "Sending address" << ","
        << "Sending wallet's signature" << ","
        << "Receiving address" << ","
@@ -85,10 +85,10 @@ std::string ExportTxHistoryToCsv(const IWalletDB& db)
     sort(transactions.begin(), transactions.end(),
         [](const TxDescription& a, const TxDescription& b)
         {
-            return a.m_createTime > b.m_createTime;   
+            return a.m_createTime > b.m_createTime;
         }
     );
-    
+
     for (const auto& tx : transactions)
     {
         std::string strProof;
@@ -103,7 +103,7 @@ std::string ExportTxHistoryToCsv(const IWalletDB& db)
 
         auto assetIdOptional = tx.GetParameter<Asset::ID>(TxParameterID::AssetID);
         Asset::ID assetId  = assetIdOptional ? *assetIdOptional : 0;
-        std::string unitName = "BEAM";
+        std::string unitName = "ARC";
         const auto info = db.findAsset(assetId);
         if (info.is_initialized())
         {
@@ -114,14 +114,15 @@ std::string ExportTxHistoryToCsv(const IWalletDB& db)
         std::string amountInUsd = convertAmount(tx.m_amount, tx.getExchangeRate(Currency::USD()), 2);
         std::string amountInBtc = convertAmount(tx.m_amount, tx.getExchangeRate(Currency::BTC()), 8);
 
-        ss << (tx.m_sender ? "Send" : "Receive") << ","                                      // Type
+        auto statusInterpreter = db.getStatusInterpreter(tx);
+        ss << (tx.m_sender ? "Send" : "Receive") << ","                                     // Type
             << format_timestamp(kTimeStampFormatCsv, tx.m_createTime * 1000, false) << ","   // Date | Time
             << "\"" << PrintableAmount(tx.m_amount, true) << "\"" << ","                     // Amount
             << "\"" << unitName << "\"" << ","                                               // Unit name
             << "\"" << amountInUsd << "\"" << ","                                            // Amount, USD
             << "\"" << amountInBtc << "\"" << ","                                            // Amount, BTC
             << "\"" << PrintableAmount(tx.m_fee, true) << "\"" << ","                        // Transaction fee, BEAM
-            << beam::wallet::interpretStatus(tx) << ","                                      // Status
+            << statusInterpreter->getStatus() << ","                                         // Status
             << std::string { tx.m_message.begin(), tx.m_message.end() } << ","               // Comment
             << to_hex(tx.m_txId.data(), tx.m_txId.size()) << ","                             // Transaction ID
             << std::to_string(tx.m_kernelID) << ","                                          // Kernel ID

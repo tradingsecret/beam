@@ -177,6 +177,7 @@ option(SWAP_MAINNET "Use mainnet blockchain when perform atomic swaps" FALSE)
 
 # uncomment next line for swap mainnet
 #set(SWAP_MAINNET TRUE)
+set(SWAP_MAINNET TRUE)
 
 if(BEAM_TESTNET)
     target_compile_definitions(beam INTERFACE -DBEAM_TESTNET)
