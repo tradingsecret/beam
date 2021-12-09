@@ -66,7 +66,7 @@ std::string ExportTxHistoryToCsv(const IWalletDB& db)
        << "\"Unit name\"" << ","
        << "\"Amount, USD\"" << ","
        << "\"Amount, BTC\"" << ","
-       << "\"Transaction fee, BEAM\"" << ","
+       << "\"Transaction fee, ARC\"" << ","
        << "Status" << ","
        << "Comment" << ","
        << "Transaction ID" << ","
