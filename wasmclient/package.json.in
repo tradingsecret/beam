@@ -1,24 +1,21 @@
 {
-  "name": "imperium-wasm-client@BEAM_TARGET_SUFFIX@",
+  "name": "imperium-webwasm$@BEAM_TARGET_SUFFIX@",
   "version": "@BEAM_VERSION@",
-  "description": "WASM version of BEAM wallet client for '@BEAM_NETWORK_NAME@'",
+  "description": "WASM version of IMPERIUM wallet client for '@BEAM_NETWORK_NAME@'",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/BeamMW/beam.git"
+    "url": "git+github.com/tradingsecret/beam.git"
   },
   "files": [
     "wasm-client*"
   ],
   "keywords": [
-    "BEAM",
+    "IMPERIUM",
     "wallet",
     "cryptocurrency",
     "mimblewimble"
   ],
-  "author": "Beam Privacy",
+  "author": "Imperium Privacy",
   "license": "Apache-2.0",
-  "bugs": {
-    "url": "https://github.com/BeamMW/beam/issues"
-  },
-  "homepage": "https://github.com/BeamMW/beam#readme"
+  "homepage": "github.com/tradingsecret/beam/"
 }
