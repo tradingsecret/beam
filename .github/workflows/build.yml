@@ -62,7 +62,7 @@ jobs:
       ###############################################################################
       - uses: actions/upload-artifact@v2
         with:
-          name: imperium-wasm${{env.BEAM_TARGET_SUFFIX}}-${{env.BEAM_VERSION}}
+          name: imperium-webwasm${{env.BEAM_TARGET_SUFFIX}}-${{env.BEAM_VERSION}}
           path: |
             ${{runner.workspace}}/build_wasm/wasmclient/wasm-client.*
           if-no-files-found: error
