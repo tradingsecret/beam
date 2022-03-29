@@ -27,8 +27,8 @@ jobs:
           git clone https://github.com/emscripten-core/emsdk.git ${{runner.workspace}}/emsdk
           cd ${{runner.workspace}}/emsdk
           git pull
-          ./emsdk install 2.0.34
-          ./emsdk activate 2.0.34
+          ./emsdk install 3.0.0
+          ./emsdk activate 3.0.0
 
       - name: Download boost
         shell: bash
