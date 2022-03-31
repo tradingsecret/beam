@@ -33,6 +33,7 @@ if(EMSCRIPTEN)
                                   -s STRICT=0"
         LINK_FLAGS "--js-transform 'python ${CMAKE_CURRENT_SOURCE_DIR}/fix-client.py' \
                    --bind --no-entry -v \
+                   -s DYNAMIC_EXECUTION=0 \
                    -s FORCE_FILESYSTEM=1 \
                    -s WEBSOCKET_URL=wss:// \
                    -s WASM_BIGINT=0 \
