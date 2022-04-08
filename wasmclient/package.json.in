@@ -1,5 +1,5 @@
 {
-  "name": "imperium-webwasm5@BEAM_TARGET_SUFFIX@",
+  "name": "imperium-webwasm6@BEAM_TARGET_SUFFIX@",
   "version": "@BEAM_VERSION@",
   "description": "WASM version of IMPERIUM wallet client for '@BEAM_NETWORK_NAME@'",
   "repository": {

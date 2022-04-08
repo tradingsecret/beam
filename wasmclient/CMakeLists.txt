@@ -45,6 +45,7 @@ if(EMSCRIPTEN)
                    -s DISABLE_EXCEPTION_CATCHING=0 \
                    -s VERBOSE=1 \
                    -s USE_PTHREADS=1 \
+                   -s WASM_WORKERS=1 \
                    -s WASM=1 \
                    -s ERROR_ON_UNDEFINED_SYMBOLS=1 \
                    -s MODULARIZE=1 \

@@ -27,8 +27,8 @@ jobs:
           git clone https://github.com/emscripten-core/emsdk.git ${{runner.workspace}}/emsdk
           cd ${{runner.workspace}}/emsdk
           git pull
-          ./emsdk install 2.0.34
-          ./emsdk activate 2.0.34
+          ./emsdk install 3.1.8
+          ./emsdk activate 3.1.8
 
       - name: Download boost
         shell: bash
@@ -62,7 +62,7 @@ jobs:
       ###############################################################################
       - uses: actions/upload-artifact@v2
         with:
-          name: imperium-webwasm5${{env.BEAM_TARGET_SUFFIX}}-${{env.BEAM_VERSION}}
+          name: imperium-webwasm6${{env.BEAM_TARGET_SUFFIX}}-${{env.BEAM_VERSION}}
           path: |
             ${{runner.workspace}}/build_wasm/wasmclient/wasm-client.*
           if-no-files-found: error
